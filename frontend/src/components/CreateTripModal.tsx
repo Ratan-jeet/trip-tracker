@@ -32,7 +32,7 @@ export default function CreateTripModal({ onClose }: CreateTripModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4" style={{ zIndex: 9999 }} onClick={onClose}>
       <div className="bg-white rounded-2xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
         <h3 className="text-xl font-bold text-gray-900 mb-4">Create New Trip</h3>
 
