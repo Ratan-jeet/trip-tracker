@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
@@ -94,6 +94,7 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
   const destinationMarker = useRef<L.Marker | null>(null);
   const initialized = useRef(false);
   const hasFitted = useRef(false);
+  const [mapReady, setMapReady] = useState(false);
 
   useEffect(() => {
     if (!mapContainer.current || initialized.current) return;
@@ -112,6 +113,7 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
 
     setTimeout(() => {
       map.current?.invalidateSize();
+      setMapReady(true);
     }, 100);
 
     return () => {
@@ -173,7 +175,7 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
       }
       hasFitted.current = true;
     }
-  }, [route]);
+  }, [route, mapReady]);
 
   // Draw lines from each member to destination
   useEffect(() => {

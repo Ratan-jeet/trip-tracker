@@ -94,7 +94,8 @@ export default async function tripRoutes(app: FastifyInstance) {
     );
 
     const devices: any[] = await queryAll(
-      'SELECT id, device_type, name, imei, is_active FROM devices WHERE trip_id = $1',
+      `SELECT d.id, d.device_type, d.name, d.imei, d.is_active, u.display_name as owner_name
+       FROM devices d LEFT JOIN users u ON d.user_id = u.id WHERE d.trip_id = $1`,
       [tripId]
     );
 
@@ -120,7 +121,7 @@ export default async function tripRoutes(app: FastifyInstance) {
       })),
       devices: devices.map(d => ({
         id: d.id, deviceType: d.device_type, name: d.name,
-        imei: d.imei, isActive: !!d.is_active,
+        imei: d.imei, isActive: !!d.is_active, ownerName: d.owner_name,
       })),
       memberRole: memberCheck.role,
       route: route ? {
