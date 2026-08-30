@@ -116,6 +116,16 @@ export default function TripPage() {
     }
   };
 
+  const handleDeleteRoute = async () => {
+    if (!confirm('Remove the route?')) return;
+    try {
+      await tripApi.deleteRoute(token!, tripId);
+      await fetchTrip(tripId);
+    } catch (err: any) {
+      alert(err.message || 'Failed to remove route');
+    }
+  };
+
   const handlePromoteMember = async (targetUserId: string, role: string) => {
     try {
       await tripApi.promote(token!, tripId, targetUserId, role);
@@ -188,12 +198,22 @@ export default function TripPage() {
         </div>
         <div className="flex items-center gap-2">
           {isAdmin && (
-            <button
-              onClick={() => setShowSetRoute(true)}
-              className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200"
-            >
-              {currentTrip.route ? 'Edit Route' : 'Set Route'}
-            </button>
+            <>
+              <button
+                onClick={() => setShowSetRoute(true)}
+                className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200"
+              >
+                {currentTrip.route ? 'Edit Route' : 'Set Route'}
+              </button>
+              {currentTrip.route && (
+                <button
+                  onClick={handleDeleteRoute}
+                  className="px-3 py-1.5 text-sm bg-red-50 text-red-600 rounded-lg hover:bg-red-100"
+                >
+                  Remove Route
+                </button>
+              )}
+            </>
           )}
           <button
             onClick={() => setShowHistory(true)}
@@ -234,7 +254,7 @@ export default function TripPage() {
               {currentTrip.members.length}
             </button>
           </div>
-          <div className="absolute bottom-4 right-4" style={{ zIndex: 1000 }}>
+          <div className="absolute bottom-4 right-4 flex flex-col gap-2" style={{ zIndex: 1000 }}>
             <button
               onClick={() => {
                 const myLoc = liveLocations.find((l: any) =>
@@ -243,6 +263,16 @@ export default function TripPage() {
                 if (myLoc) {
                   setCenterOn({ lat: myLoc.lat, lng: myLoc.lng });
                   setFollowDevice(myLoc.deviceId);
+                  return;
+                }
+                if (navigator.geolocation) {
+                  navigator.geolocation.getCurrentPosition(
+                    (pos) => {
+                      setCenterOn({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+                    },
+                    () => {},
+                    { enableHighAccuracy: true, timeout: 5000 }
+                  );
                 }
               }}
               className="p-3 bg-white rounded-full shadow-md text-blue-600 hover:bg-blue-50"
