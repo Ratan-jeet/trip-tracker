@@ -14,29 +14,35 @@ const DEVICE_ICONS: Record<string, string> = {
   vehicle: '🚗',
 };
 
-function createMarkerIcon(deviceType: string, isStale: boolean, batteryLevel?: number) {
+function createMarkerIcon(deviceType: string, isStale: boolean, batteryLevel?: number, deviceName?: string) {
   const color = isStale ? '#6b7280' : (DEVICE_COLORS[deviceType] || '#6b7280');
   const emoji = DEVICE_ICONS[deviceType] || '📍';
+  const label = deviceName || 'Unknown';
 
   const html = `
-    <div style="position:relative;width:40px;height:40px;">
-      <div style="position:absolute;inset:-4px;border-radius:50%;background:${color};opacity:0.3;animation:pulse-ring 1.5s infinite;"></div>
-      <div style="width:40px;height:40px;border-radius:50%;background:${color};display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 2px 8px rgba(0,0,0,0.3);color:white;border:3px solid white;">
-        ${emoji}
-      </div>
-      ${batteryLevel !== undefined ? `
-        <div style="position:absolute;bottom:-4px;right:-4px;background:white;border-radius:10px;padding:1px 4px;font-size:10px;font-weight:bold;box-shadow:0 1px 3px rgba(0,0,0,0.2);">
-          ${batteryLevel}%
+    <div style="position:relative;display:flex;flex-direction:column;align-items:center;">
+      <div style="position:relative;width:40px;height:40px;">
+        <div style="position:absolute;inset:-4px;border-radius:50%;background:${color};opacity:0.3;animation:pulse-ring 1.5s infinite;"></div>
+        <div style="width:40px;height:40px;border-radius:50%;background:${color};display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 2px 8px rgba(0,0,0,0.3);color:white;border:3px solid white;">
+          ${emoji}
         </div>
-      ` : ''}
+        ${batteryLevel !== undefined ? `
+          <div style="position:absolute;bottom:-4px;right:-4px;background:white;border-radius:10px;padding:1px 4px;font-size:10px;font-weight:bold;box-shadow:0 1px 3px rgba(0,0,0,0.2);">
+            ${batteryLevel}%
+          </div>
+        ` : ''}
+      </div>
+      <div style="margin-top:2px;background:white;padding:1px 4px;border-radius:4px;font-size:9px;font-weight:600;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,0.2);color:#374151;max-width:80px;overflow:hidden;text-overflow:ellipsis;">
+        ${label}
+      </div>
     </div>
   `;
 
   return L.divIcon({
     html,
     className: '',
-    iconSize: [40, 40],
-    iconAnchor: [20, 20],
+    iconSize: [40, 56],
+    iconAnchor: [20, 48],
   });
 }
 
@@ -50,6 +56,7 @@ export default function MapView({ locations, followDeviceId }: MapViewProps) {
   const map = useRef<L.Map | null>(null);
   const markers = useRef<Map<string, L.Marker>>(new Map());
   const initialized = useRef(false);
+  const hasFitted = useRef(false);
 
   useEffect(() => {
     if (!mapContainer.current || initialized.current) return;
@@ -84,7 +91,7 @@ export default function MapView({ locations, followDeviceId }: MapViewProps) {
       const { deviceId, lat, lng, deviceType, deviceName, speed, accuracy, timestamp, batteryLevel, ownerName, isStale } = loc;
 
       if (!markers.current.has(deviceId)) {
-        const icon = createMarkerIcon(deviceType, isStale, batteryLevel);
+        const icon = createMarkerIcon(deviceType, isStale, batteryLevel, deviceName);
         const marker = L.marker([lat, lng], { icon }).addTo(map.current!);
 
         const popupContent = `
@@ -104,7 +111,7 @@ export default function MapView({ locations, followDeviceId }: MapViewProps) {
       } else {
         const marker = markers.current.get(deviceId)!;
         marker.setLatLng([lat, lng]);
-        const icon = createMarkerIcon(deviceType, isStale, batteryLevel);
+        const icon = createMarkerIcon(deviceType, isStale, batteryLevel, deviceName);
         marker.setIcon(icon);
       }
     });
@@ -121,7 +128,8 @@ export default function MapView({ locations, followDeviceId }: MapViewProps) {
       if (followLoc) {
         map.current!.setView([followLoc.lat, followLoc.lng], 16, { animate: true });
       }
-    } else if (locations.length > 0) {
+    } else if (locations.length > 0 && !hasFitted.current) {
+      hasFitted.current = true;
       const bounds = L.latLngBounds(locations.map((l: any) => [l.lat, l.lng] as [number, number]));
       map.current!.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
     }
