@@ -1,20 +1,46 @@
 'use client';
 
+import { haversineDistance, formatDistance, formatTime } from './MapView';
+
 interface MemberListProps {
   members: any[];
   devices: any[];
   liveLocations: any[];
   followDeviceId: string | null;
   onFollow: (deviceId: string | null) => void;
+  onCenter: (lat: number, lng: number) => void;
   currentUserId?: string;
   isPrimaryAdmin: boolean;
   isAdmin: boolean;
   onPromote: (userId: string, role: string) => void;
+  route?: {
+    destinationName: string;
+    destinationLat: number;
+    destinationLng: number;
+    waypoints: { lat: number; lng: number }[];
+  } | null;
 }
 
 export default function MemberList({
-  members, devices, liveLocations, followDeviceId, onFollow, currentUserId, isPrimaryAdmin, isAdmin, onPromote
+  members, devices, liveLocations, followDeviceId, onFollow, onCenter, currentUserId, isPrimaryAdmin, isAdmin, onPromote, route
 }: MemberListProps) {
+  const getRouteStats = (lat: number, lng: number, speed: number) => {
+    if (!route) return null;
+
+    const destLat = route.destinationLat;
+    const destLng = route.destinationLng;
+
+    const distToDest = haversineDistance(lat, lng, destLat, destLng);
+    const speedKmh = (speed || 0) * 3.6;
+    const etaHours = speedKmh > 1 ? distToDest / speedKmh : 0;
+
+    return {
+      distToDest,
+      etaHours,
+      speedKmh,
+    };
+  };
+
   return (
     <div className="bg-white border-t border-gray-200 px-4 py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.1)]">
       <div className="flex items-center justify-between mb-3">
@@ -27,7 +53,7 @@ export default function MemberList({
         </span>
       </div>
 
-      <div className="space-y-1 max-h-[160px] overflow-y-auto">
+      <div className="space-y-1 max-h-[200px] overflow-y-auto">
         {members.map((member) => {
           const memberDevices = devices.filter((d: any) => d.ownerName === member.displayName);
           const memberLocations = liveLocations.filter((l: any) =>
@@ -36,6 +62,8 @@ export default function MemberList({
           const hasLiveLocation = memberLocations.length > 0;
           const isCurrentUser = member.userId === currentUserId;
           const isThisAdmin = member.role === 'admin';
+          const loc = memberLocations[0];
+          const stats = loc ? getRouteStats(loc.lat, loc.lng, loc.speed || 0) : null;
 
           return (
             <div key={member.userId} className="flex items-center gap-3 py-2 px-2 rounded-lg hover:bg-gray-50">
@@ -51,7 +79,10 @@ export default function MemberList({
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-gray-900 truncate">
+                  <span
+                    className={`text-sm font-semibold truncate ${hasLiveLocation ? 'text-blue-600 hover:text-blue-800 cursor-pointer' : 'text-gray-900'}`}
+                    onClick={() => hasLiveLocation && onCenter(loc.lat, loc.lng)}
+                  >
                     {member.displayName}
                   </span>
                   {isCurrentUser && (
@@ -67,24 +98,32 @@ export default function MemberList({
                   ) : (
                     <span className="text-gray-400">Connected</span>
                   )}
-                  {memberLocations.length > 0 && memberLocations[0].speed > 0 && (
-                    <span> &middot; {(memberLocations[0].speed * 3.6).toFixed(0)} km/h</span>
+                  {loc && loc.speed > 0 && (
+                    <span> &middot; {(loc.speed * 3.6).toFixed(0)} km/h</span>
                   )}
-                  {memberLocations.length > 0 && memberLocations[0].batteryLevel !== undefined && (
-                    <span> &middot; {memberLocations[0].batteryLevel}%</span>
+                  {loc && loc.batteryLevel !== undefined && (
+                    <span> &middot; {loc.batteryLevel}%</span>
                   )}
                 </div>
+                {stats && (
+                  <div className="text-[11px] text-blue-600 mt-0.5 space-x-2">
+                    <span>{formatDistance(stats.distToDest)} left</span>
+                    {stats.speedKmh > 1 && (
+                      <span>&middot; {formatTime(stats.etaHours)}</span>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 {hasLiveLocation && (
                   <button
-                    onClick={() => onFollow(followDeviceId === memberLocations[0].deviceId ? null : memberLocations[0].deviceId)}
+                    onClick={() => onFollow(followDeviceId === loc.deviceId ? null : loc.deviceId)}
                     className={`p-2 rounded-lg transition-colors ${
-                      followDeviceId === memberLocations[0].deviceId
+                      followDeviceId === loc.deviceId
                         ? 'bg-blue-100 text-blue-600'
                         : 'text-gray-400 hover:bg-gray-100'
                     }`}
-                    title={followDeviceId === memberLocations[0].deviceId ? 'Unfollow' : 'Follow'}
+                    title={followDeviceId === loc.deviceId ? 'Unfollow' : 'Follow'}
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />

@@ -98,6 +98,11 @@ export default async function tripRoutes(app: FastifyInstance) {
       [tripId]
     );
 
+    const route: any = await queryOne(
+      'SELECT id, destination_name, destination_lat, destination_lng, waypoints, created_by FROM trip_routes WHERE trip_id = $1',
+      [tripId]
+    );
+
     return reply.send({
       id: tripResult.id,
       name: tripResult.name,
@@ -118,6 +123,14 @@ export default async function tripRoutes(app: FastifyInstance) {
         imei: d.imei, isActive: !!d.is_active,
       })),
       memberRole: memberCheck.role,
+      route: route ? {
+        id: route.id,
+        destinationName: route.destination_name,
+        destinationLat: route.destination_lat,
+        destinationLng: route.destination_lng,
+        waypoints: typeof route.waypoints === 'string' ? JSON.parse(route.waypoints) : route.waypoints,
+        createdBy: route.created_by,
+      } : null,
     });
   });
 
@@ -227,6 +240,47 @@ export default async function tripRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: 'Only the trip creator can delete it' });
     }
     await run('DELETE FROM trips WHERE id = $1', [tripId]);
+    return reply.send({ success: true });
+  });
+
+  app.post('/api/trips/:tripId/route', {
+    preHandler: [app.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const userId = (request.user as any).userId;
+    const { tripId } = request.params as { tripId: string };
+    const { destinationName, destinationLat, destinationLng, waypoints } = request.body as {
+      destinationName: string; destinationLat: number; destinationLng: number; waypoints?: { lat: number; lng: number }[];
+    };
+
+    const member: any = await queryOne('SELECT role FROM trip_members WHERE trip_id = $1 AND user_id = $2', [tripId, userId]);
+    if (!member || member.role !== 'admin') {
+      return reply.status(403).send({ error: 'Only admins can set routes' });
+    }
+
+    await run('DELETE FROM trip_routes WHERE trip_id = $1', [tripId]);
+    const routeId = nanoid();
+    await run(
+      'INSERT INTO trip_routes (id, trip_id, destination_name, destination_lat, destination_lng, waypoints, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      [routeId, tripId, destinationName, destinationLat, destinationLng, JSON.stringify(waypoints || []), userId]
+    );
+
+    return reply.status(201).send({
+      id: routeId, destinationName, destinationLat, destinationLng, waypoints: waypoints || [], createdBy: userId,
+    });
+  });
+
+  app.delete('/api/trips/:tripId/route', {
+    preHandler: [app.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const userId = (request.user as any).userId;
+    const { tripId } = request.params as { tripId: string };
+
+    const member: any = await queryOne('SELECT role FROM trip_members WHERE trip_id = $1 AND user_id = $2', [tripId, userId]);
+    if (!member || member.role !== 'admin') {
+      return reply.status(403).send({ error: 'Only admins can delete routes' });
+    }
+
+    await run('DELETE FROM trip_routes WHERE trip_id = $1', [tripId]);
     return reply.send({ success: true });
   });
 }

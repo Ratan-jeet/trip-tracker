@@ -79,6 +79,12 @@ export const tripApi = {
 
   promote: (token: string, tripId: string, targetUserId: string, role: string) =>
     api(`/api/trips/${tripId}/promote`, { method: 'POST', body: { targetUserId, role }, token }),
+
+  setRoute: (token: string, tripId: string, data: { destinationName: string; destinationLat: number; destinationLng: number; waypoints?: { lat: number; lng: number }[] }) =>
+    api(`/api/trips/${tripId}/route`, { method: 'POST', body: data, token }),
+
+  deleteRoute: (token: string, tripId: string) =>
+    api(`/api/trips/${tripId}/route`, { method: 'DELETE', token }),
 };
 
 export const deviceApi = {

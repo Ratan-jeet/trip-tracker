@@ -9,6 +9,7 @@ import MapView from '@/components/MapView';
 import MemberList from '@/components/MemberList';
 import DeviceToggle from '@/components/DeviceToggle';
 import HistoryModal from '@/components/HistoryModal';
+import SetRouteModal from '@/components/SetRouteModal';
 import dayjs from 'dayjs';
 
 export default function TripPage() {
@@ -23,6 +24,8 @@ export default function TripPage() {
   const [showHistory, setShowHistory] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showMembers, setShowMembers] = useState(true);
+  const [showSetRoute, setShowSetRoute] = useState(false);
+  const [centerOn, setCenterOn] = useState<{ lat: number; lng: number } | null>(null);
   const [trackingInterval, setTrackingInterval] = useState<NodeJS.Timeout | null>(null);
 
   useWebSocket(tripId);
@@ -91,7 +94,7 @@ export default function TripPage() {
     setTrackingInterval(watchId as unknown as NodeJS.Timeout);
   }, [token, tripId, user]);
 
-  // Auto-start tracking when trip loads and user is sharing
+  // Auto-start tracking when trip loads and user is sharing, or when route is set
   useEffect(() => {
     if (currentTrip && isSharing && !trackingInterval) {
       startTracking();
@@ -101,7 +104,7 @@ export default function TripPage() {
         navigator.geolocation.clearWatch(trackingInterval as unknown as number);
       }
     };
-  }, [currentTrip, isSharing]);
+  }, [currentTrip, isSharing, currentTrip?.route]);
 
   const handleEndTrip = async () => {
     if (!confirm('End this trip? All members will stop sharing location.')) return;
@@ -184,6 +187,14 @@ export default function TripPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {isAdmin && (
+            <button
+              onClick={() => setShowSetRoute(true)}
+              className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200"
+            >
+              {currentTrip.route ? 'Edit Route' : 'Set Route'}
+            </button>
+          )}
           <button
             onClick={() => setShowHistory(true)}
             className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
@@ -206,6 +217,8 @@ export default function TripPage() {
           <MapView
             locations={filteredLocations}
             followDeviceId={followDeviceId}
+            route={currentTrip.route}
+            centerOn={centerOn}
           />
           <div className="absolute top-4 left-4" style={{ zIndex: 1000 }}>
             <DeviceToggle filter={filter} onChange={setFilter} />
@@ -221,6 +234,26 @@ export default function TripPage() {
               {currentTrip.members.length}
             </button>
           </div>
+          <div className="absolute bottom-4 right-4" style={{ zIndex: 1000 }}>
+            <button
+              onClick={() => {
+                const myLoc = liveLocations.find((l: any) =>
+                  currentTrip.devices.some((d: any) => d.id === l.deviceId && d.ownerName === user?.displayName)
+                );
+                if (myLoc) {
+                  setCenterOn({ lat: myLoc.lat, lng: myLoc.lng });
+                  setFollowDevice(myLoc.deviceId);
+                }
+              }}
+              className="p-3 bg-white rounded-full shadow-md text-blue-600 hover:bg-blue-50"
+              title="My Location"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         {showMembers && (
@@ -231,10 +264,12 @@ export default function TripPage() {
               liveLocations={filteredLocations}
               followDeviceId={followDeviceId}
               onFollow={setFollowDevice}
+              onCenter={(lat, lng) => setCenterOn({ lat, lng })}
               currentUserId={user?.id}
               isPrimaryAdmin={isPrimaryAdmin}
               isAdmin={isAdmin}
               onPromote={handlePromoteMember}
+              route={currentTrip.route}
             />
           </div>
         )}
@@ -244,6 +279,14 @@ export default function TripPage() {
         <HistoryModal
           tripId={tripId}
           onClose={() => setShowHistory(false)}
+        />
+      )}
+
+      {showSetRoute && (
+        <SetRouteModal
+          tripId={tripId}
+          onClose={() => setShowSetRoute(false)}
+          onRouteSet={() => fetchTrip(tripId)}
         />
       )}
     </div>

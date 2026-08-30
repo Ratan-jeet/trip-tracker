@@ -30,6 +30,14 @@ interface TripDetail extends Trip {
   members: TripMember[];
   devices: Device[];
   memberRole: string;
+  route: {
+    id: string;
+    destinationName: string;
+    destinationLat: number;
+    destinationLng: number;
+    waypoints: { lat: number; lng: number }[];
+    createdBy: string;
+  } | null;
 }
 
 interface TripMember {

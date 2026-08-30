@@ -94,6 +94,16 @@ async function initPostgres() {
       ip_address INET,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS trip_routes (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+      destination_name VARCHAR(200) NOT NULL,
+      destination_lat DOUBLE PRECISION NOT NULL,
+      destination_lng DOUBLE PRECISION NOT NULL,
+      waypoints JSONB DEFAULT '[]',
+      created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
     CREATE INDEX IF NOT EXISTS idx_locations_trip_id ON locations(trip_id);
     CREATE INDEX IF NOT EXISTS idx_locations_device_id ON locations(device_id);
     CREATE INDEX IF NOT EXISTS idx_locations_timestamp ON locations(timestamp DESC);
@@ -133,6 +143,7 @@ async function initSqlite() {
     CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id) ON DELETE SET NULL, trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE, device_type TEXT NOT NULL, name TEXT NOT NULL, imei TEXT, is_active INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')), UNIQUE(trip_id, imei));
     CREATE TABLE IF NOT EXISTS locations (id TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE, trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE, lat REAL NOT NULL, lng REAL NOT NULL, accuracy REAL, speed REAL, heading REAL, battery_level INTEGER, ignition_status INTEGER, timestamp TEXT NOT NULL DEFAULT (datetime('now')), created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, action TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT, metadata TEXT, ip_address TEXT, created_at TEXT DEFAULT (datetime('now')));
+    CREATE TABLE IF NOT EXISTS trip_routes (id TEXT PRIMARY KEY, trip_id TEXT NOT NULL REFERENCES trips(id) ON DELETE CASCADE, destination_name TEXT NOT NULL, destination_lat REAL NOT NULL, destination_lng REAL NOT NULL, waypoints TEXT DEFAULT '[]', created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TEXT DEFAULT (datetime('now')));
   `;
   schema.split('\n').filter(s => s.trim()).forEach(s => sqliteDb.run(s));
 
