@@ -1,0 +1,38 @@
+{
+  "name": "trip-tracker-backend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "^9.0.1",
+    "@fastify/jwt": "^8.0.1",
+    "@fastify/rate-limit": "^9.1.0",
+    "@fastify/websocket": "^10.0.1",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/pg": "^8.11.6",
+    "@types/qrcode": "^1.5.5",
+    "@types/speakeasy": "^2.0.10",
+    "bcryptjs": "^2.4.3",
+    "csv-stringify": "^6.5.1",
+    "dayjs": "^1.11.12",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.28.0",
+    "ioredis": "^5.4.1",
+    "nanoid": "^5.0.7",
+    "pg": "^8.12.0",
+    "qrcode": "^1.5.3",
+    "speakeasy": "^2.0.0",
+    "sql.js": "^1.10.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4"
+  }
+}
