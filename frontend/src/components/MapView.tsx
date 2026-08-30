@@ -90,6 +90,7 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
   const map = useRef<L.Map | null>(null);
   const markers = useRef<Map<string, L.Marker>>(new Map());
   const routeLine = useRef<L.Polyline | null>(null);
+  const memberLines = useRef<L.Polyline[]>([]);
   const destinationMarker = useRef<L.Marker | null>(null);
   const initialized = useRef(false);
   const hasFitted = useRef(false);
@@ -132,41 +133,63 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
       map.current.removeLayer(destinationMarker.current);
       destinationMarker.current = null;
     }
+    memberLines.current.forEach(l => map.current?.removeLayer(l));
+    memberLines.current = [];
 
     if (!route) return;
 
-    const allPoints: L.LatLngExpression[] = [];
-    if (route.waypoints && route.waypoints.length > 0) {
-      route.waypoints.forEach(wp => allPoints.push([wp.lat, wp.lng]));
-    }
-    allPoints.push([route.destinationLat, route.destinationLng]);
+    const destIcon = L.divIcon({
+      html: `<div style="font-size:28px;text-shadow:0 2px 4px rgba(0,0,0,0.3);">🏁</div>`,
+      className: '',
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+    });
 
-    if (allPoints.length > 0) {
-      routeLine.current = L.polyline(allPoints, {
+    destinationMarker.current = L.marker([route.destinationLat, route.destinationLng], { icon: destIcon })
+      .addTo(map.current)
+      .bindPopup(`<div style="font-weight:bold;">${route.destinationName}</div>Destination`);
+
+    const routePoints: L.LatLngExpression[] = [];
+    if (route.waypoints && route.waypoints.length > 0) {
+      route.waypoints.forEach(wp => routePoints.push([wp.lat, wp.lng]));
+    }
+    routePoints.push([route.destinationLat, route.destinationLng]);
+
+    if (routePoints.length > 1) {
+      routeLine.current = L.polyline(routePoints, {
         color: '#2563eb',
         weight: 4,
         opacity: 0.7,
         dashArray: '10, 8',
       }).addTo(map.current);
+    }
 
-      const destIcon = L.divIcon({
-        html: `<div style="font-size:28px;text-shadow:0 2px 4px rgba(0,0,0,0.3);">🏁</div>`,
-        className: '',
-        iconSize: [28, 28],
-        iconAnchor: [14, 14],
-      });
-
-      destinationMarker.current = L.marker([route.destinationLat, route.destinationLng], { icon: destIcon })
-        .addTo(map.current)
-        .bindPopup(`<div style="font-weight:bold;">${route.destinationName}</div>Destination`);
-
-      if (!hasFitted.current) {
-        const bounds = L.latLngBounds(allPoints);
+    if (!hasFitted.current) {
+      const allPts: L.LatLngExpression[] = [...routePoints];
+      locations.forEach(l => allPts.push([l.lat, l.lng]));
+      if (allPts.length > 0) {
+        const bounds = L.latLngBounds(allPts);
         map.current.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
-        hasFitted.current = true;
       }
+      hasFitted.current = true;
     }
   }, [route]);
+
+  // Draw lines from each member to destination
+  useEffect(() => {
+    if (!map.current || !route) return;
+
+    memberLines.current.forEach(l => map.current?.removeLayer(l));
+    memberLines.current = [];
+
+    locations.forEach((loc) => {
+      const line = L.polyline(
+        [[loc.lat, loc.lng], [route.destinationLat, route.destinationLng]],
+        { color: '#2563eb', weight: 2, opacity: 0.4, dashArray: '6, 6' }
+      ).addTo(map.current!);
+      memberLines.current.push(line);
+    });
+  }, [locations, route]);
 
   // Center on specific location
   useEffect(() => {
