@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: trip_together
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+
+  emqx:
+    image: emqx/emqx:5.5
+    ports:
+      - "1883:1883"
+      - "8083:8083"
+      - "18083:18083"
+    environment:
+      EMQX_NAME: trip-together
+
+volumes:
+  pgdata:
+  redisdata:

@@ -40,6 +40,7 @@ async function main() {
   await app.register(tripRoutes);
   await app.register(locationRoutes);
 
+  app.get('/', async () => ({ name: 'Trip Tracker API', status: 'ok', docs: '/api/health' }));
   app.get('/api/health', async () => ({ status: 'ok', timestamp: new Date().toISOString() }));
 
   await seedDemoData();
