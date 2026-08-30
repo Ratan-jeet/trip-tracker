@@ -18,13 +18,11 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: CORS_ORIGIN
-        sync: false  # Set to your frontend URL after first deploy
-      - key: REDIS_URL
-        sync: false  # Optional: add Redis later for multi-instance
+        value: https://trip-tracker-app.onrender.com
 
   # Frontend
   - type: web
-    name: trip-tracker-frontend
+    name: trip-tracker-app
     runtime: node
     region: oregon
     rootDir: frontend
@@ -32,9 +30,9 @@ services:
     startCommand: npm start
     envVars:
       - key: NEXT_PUBLIC_API_URL
-        sync: false  # Set to backend URL after deploy (e.g. https://trip-tracker-api.onrender.com)
+        sync: false
       - key: NEXT_PUBLIC_WS_URL
-        sync: false  # Set to wss://your-backend-url.onrender.com
+        sync: false
 
   # PostgreSQL Database
   - type: pgsql
