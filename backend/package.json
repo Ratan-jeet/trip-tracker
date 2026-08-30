@@ -16,6 +16,7 @@
     "@types/pg": "^8.11.6",
     "@types/qrcode": "^1.5.5",
     "@types/speakeasy": "^2.0.10",
+    "@types/ws": "^8.18.1",
     "bcryptjs": "^2.4.3",
     "csv-stringify": "^6.5.1",
     "dayjs": "^1.11.12",
@@ -31,7 +32,6 @@
   },
   "devDependencies": {
     "@types/node": "^20.14.10",
-    "@types/ws": "^8.18.1",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4"
   }
