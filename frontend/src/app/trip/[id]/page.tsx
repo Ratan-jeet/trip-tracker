@@ -136,6 +136,16 @@ export default function TripPage() {
     }
   };
 
+  const handleRemoveMember = async (targetUserId: string) => {
+    if (!confirm('Remove this member from the trip?')) return;
+    try {
+      await tripApi.removeMember(token!, tripId, targetUserId);
+      await fetchTrip(tripId);
+    } catch (err: any) {
+      alert(err.message || 'Failed to remove member');
+    }
+  };
+
   // Fetch OSRM route info when location or route changes
   useEffect(() => {
     if (!currentTrip?.route || liveLocations.length === 0) {
@@ -357,6 +367,7 @@ export default function TripPage() {
               isPrimaryAdmin={isPrimaryAdmin}
               isAdmin={isAdmin}
               onPromote={handlePromoteMember}
+              onRemove={handleRemoveMember}
               route={currentTrip.route}
             />
           </div>

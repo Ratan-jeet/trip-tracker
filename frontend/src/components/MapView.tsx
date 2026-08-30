@@ -222,27 +222,36 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
   useEffect(() => {
     if (!map.current) return;
 
-    // Calculate overlapping offsets
-    const namePositions: { name: string; lat: number; lng: number; offset: number }[] = [];
-    locations.forEach((loc) => {
-      const existing = namePositions.find(p =>
-        p.name === loc.ownerName &&
-        Math.abs(p.lat - loc.lat) < 0.0005 &&
-        Math.abs(p.lng - loc.lng) < 0.0005
+    // Calculate overlapping offsets — group ALL nearby markers
+    const clusters: { lat: number; lng: number; members: number[] }[] = [];
+    locations.forEach((loc, i) => {
+      const cluster = clusters.find(c =>
+        Math.abs(c.lat - loc.lat) < 0.0003 && Math.abs(c.lng - loc.lng) < 0.0003
       );
-      if (existing) {
-        existing.offset += 20;
+      if (cluster) {
+        cluster.members.push(i);
       } else {
-        namePositions.push({ name: loc.ownerName || '', lat: loc.lat, lng: loc.lng, offset: 0 });
+        clusters.push({ lat: loc.lat, lng: loc.lng, members: [i] });
       }
     });
 
-    locations.forEach((loc) => {
+    const offsets = new Map<number, number>();
+    clusters.forEach(cluster => {
+      if (cluster.members.length > 1) {
+        cluster.members.forEach((idx, i) => {
+          offsets.set(idx, i * 30);
+        });
+      }
+    });
+
+    locations.forEach((loc, idx) => {
       const { deviceId, lat, lng, deviceType, deviceName, speed, accuracy, timestamp, batteryLevel, ownerName, isStale, heading } = loc;
+      const offsetPx = offsets.get(idx) || 0;
+      const offsetLat = lat + (offsetPx * 0.00001);
 
       if (!markers.current.has(deviceId)) {
         const icon = createMarkerIcon(deviceType, isStale, batteryLevel, ownerName, speed, heading);
-        const marker = L.marker([lat, lng], { icon }).addTo(map.current!);
+        const marker = L.marker([offsetLat, lng], { icon }).addTo(map.current!);
 
         const popupContent = `
           <div style="min-width:160px;font-family:system-ui,sans-serif;">
@@ -259,7 +268,7 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
         markers.current.set(deviceId, marker);
       } else {
         const marker = markers.current.get(deviceId)!;
-        marker.setLatLng([lat, lng]);
+        marker.setLatLng([offsetLat, lng]);
         const icon = createMarkerIcon(deviceType, isStale, batteryLevel, ownerName, speed, heading);
         marker.setIcon(icon);
       }

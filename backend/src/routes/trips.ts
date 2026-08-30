@@ -172,6 +172,32 @@ export default async function tripRoutes(app: FastifyInstance) {
     return reply.send({ success: true });
   });
 
+  app.post('/api/trips/:tripId/remove-member', {
+    preHandler: [app.authenticate],
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const userId = (request.user as any).userId;
+    const { tripId } = request.params as { tripId: string };
+    const { targetUserId } = request.body as { targetUserId: string };
+
+    const member: any = await queryOne('SELECT role FROM trip_members WHERE trip_id = $1 AND user_id = $2', [tripId, userId]);
+    if (!member || member.role !== 'admin') {
+      return reply.status(403).send({ error: 'Only admins can remove members' });
+    }
+
+    if (targetUserId === userId) {
+      return reply.status(400).send({ error: 'Cannot remove yourself. Use Leave instead.' });
+    }
+
+    const trip: any = await queryOne('SELECT creator_id FROM trips WHERE id = $1', [tripId]);
+    if (trip?.creator_id === targetUserId) {
+      return reply.status(400).send({ error: 'Cannot remove the trip creator' });
+    }
+
+    await run('UPDATE devices SET is_active = false WHERE trip_id = $1 AND user_id = $2', [tripId, targetUserId]);
+    await run('DELETE FROM trip_members WHERE trip_id = $1 AND user_id = $2', [tripId, targetUserId]);
+    return reply.send({ success: true });
+  });
+
   app.post('/api/trips/:tripId/share', {
     preHandler: [app.authenticate],
   }, async (request: FastifyRequest, reply: FastifyReply) => {

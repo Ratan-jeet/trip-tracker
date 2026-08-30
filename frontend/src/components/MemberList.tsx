@@ -13,6 +13,7 @@ interface MemberListProps {
   isPrimaryAdmin: boolean;
   isAdmin: boolean;
   onPromote: (userId: string, role: string) => void;
+  onRemove: (userId: string) => void;
   route?: {
     destinationName: string;
     destinationLat: number;
@@ -22,7 +23,7 @@ interface MemberListProps {
 }
 
 export default function MemberList({
-  members, devices, liveLocations, followDeviceId, onFollow, onCenter, currentUserId, isPrimaryAdmin, isAdmin, onPromote, route
+  members, devices, liveLocations, followDeviceId, onFollow, onCenter, currentUserId, isPrimaryAdmin, isAdmin, onPromote, onRemove, route
 }: MemberListProps) {
   const getRouteStats = (lat: number, lng: number, speed: number) => {
     if (!route) return null;
@@ -140,17 +141,26 @@ export default function MemberList({
                   </span>
                 )}
                 {isPrimaryAdmin && !isCurrentUser && (
-                  <button
-                    onClick={() => onPromote(member.userId, isThisAdmin ? 'member' : 'admin')}
-                    className={`px-2 py-1 text-[11px] font-medium rounded transition-colors ${
-                      isThisAdmin
-                        ? 'bg-purple-50 text-purple-600 hover:bg-purple-100'
-                        : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                    }`}
-                    title={isThisAdmin ? 'Remove admin' : 'Make admin'}
-                  >
-                    {isThisAdmin ? 'Demote' : 'Make Admin'}
-                  </button>
+                  <>
+                    <button
+                      onClick={() => onPromote(member.userId, isThisAdmin ? 'member' : 'admin')}
+                      className={`px-2 py-1 text-[11px] font-medium rounded transition-colors ${
+                        isThisAdmin
+                          ? 'bg-purple-50 text-purple-600 hover:bg-purple-100'
+                          : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                      }`}
+                      title={isThisAdmin ? 'Remove admin' : 'Make admin'}
+                    >
+                      {isThisAdmin ? 'Demote' : 'Make Admin'}
+                    </button>
+                    <button
+                      onClick={() => onRemove(member.userId)}
+                      className="px-2 py-1 text-[11px] font-medium rounded bg-red-50 text-red-600 hover:bg-red-100"
+                      title="Remove from trip"
+                    >
+                      Remove
+                    </button>
+                  </>
                 )}
               </div>
             </div>
