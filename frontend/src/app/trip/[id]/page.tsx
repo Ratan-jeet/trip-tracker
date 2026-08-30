@@ -6,6 +6,7 @@ import { useStore } from '@/lib/store';
 import { useWebSocket } from '@/lib/useWebSocket';
 import { tripApi } from '@/lib/api';
 import MapView from '@/components/MapView';
+import { haversineDistance, formatDistance, formatTime } from '@/components/MapView';
 import MemberList from '@/components/MemberList';
 import DeviceToggle from '@/components/DeviceToggle';
 import HistoryModal from '@/components/HistoryModal';
@@ -284,6 +285,33 @@ export default function TripPage() {
               </svg>
             </button>
           </div>
+          {currentTrip.route && (
+            <div className="absolute bottom-4 left-4 right-16" style={{ zIndex: 1000 }}>
+              {(() => {
+                const myLoc = liveLocations.find((l: any) =>
+                  currentTrip.devices.some((d: any) => d.id === l.deviceId && d.ownerName === user?.displayName)
+                );
+                if (!myLoc) return null;
+                const dist = haversineDistance(myLoc.lat, myLoc.lng, currentTrip.route.destinationLat, currentTrip.route.destinationLng);
+                const speedKmh = (myLoc.speed || 0) * 3.6;
+                const etaHours = speedKmh > 1 ? dist / speedKmh : 0;
+                const arrivalTime = new Date(Date.now() + etaHours * 3600000);
+                return (
+                  <div className="bg-white rounded-xl shadow-lg p-3 flex items-center gap-4">
+                    <div className="text-center">
+                      <div className="text-lg font-bold text-blue-600">{formatTime(etaHours)}</div>
+                      <div className="text-xs text-gray-500">{arrivalTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                    </div>
+                    <div className="h-8 w-px bg-gray-200"></div>
+                    <div className="text-center">
+                      <div className="text-lg font-bold text-gray-900">{formatDistance(dist)}</div>
+                      <div className="text-xs text-gray-500">{currentTrip.route.destinationName}</div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
         </div>
 
         {showMembers && (

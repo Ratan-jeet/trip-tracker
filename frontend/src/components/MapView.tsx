@@ -159,10 +159,9 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
 
     if (routePoints.length > 1) {
       routeLine.current = L.polyline(routePoints, {
-        color: '#2563eb',
-        weight: 4,
-        opacity: 0.7,
-        dashArray: '10, 8',
+        color: '#1a56db',
+        weight: 6,
+        opacity: 0.9,
       }).addTo(map.current);
     }
 
@@ -187,7 +186,7 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
     locations.forEach((loc) => {
       const line = L.polyline(
         [[loc.lat, loc.lng], [route.destinationLat, route.destinationLng]],
-        { color: '#2563eb', weight: 2, opacity: 0.4, dashArray: '6, 6' }
+        { color: '#60a5fa', weight: 3, opacity: 0.6 }
       ).addTo(map.current!);
       memberLines.current.push(line);
     });
