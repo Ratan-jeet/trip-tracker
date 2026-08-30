@@ -5,8 +5,7 @@ import { useRouter, useParams } from 'next/navigation';
 import { useStore } from '@/lib/store';
 import { useWebSocket } from '@/lib/useWebSocket';
 import { tripApi } from '@/lib/api';
-import MapView from '@/components/MapView';
-import { haversineDistance, formatDistance, formatTime } from '@/components/MapView';
+import MapView, { haversineDistance, formatDistance, formatTime } from '@/components/MapView';
 import MemberList from '@/components/MemberList';
 import DeviceToggle from '@/components/DeviceToggle';
 import HistoryModal from '@/components/HistoryModal';
@@ -27,6 +26,7 @@ export default function TripPage() {
   const [showMembers, setShowMembers] = useState(true);
   const [showSetRoute, setShowSetRoute] = useState(false);
   const [centerOn, setCenterOn] = useState<{ lat: number; lng: number } | null>(null);
+  const [routeInfo, setRouteInfo] = useState<{ distance: number; duration: number } | null>(null);
   const [trackingInterval, setTrackingInterval] = useState<NodeJS.Timeout | null>(null);
 
   useWebSocket(tripId);
@@ -135,6 +135,34 @@ export default function TripPage() {
       alert(err.message || 'Failed to update role');
     }
   };
+
+  // Fetch OSRM route info when location or route changes
+  useEffect(() => {
+    if (!currentTrip?.route || liveLocations.length === 0) {
+      setRouteInfo(null);
+      return;
+    }
+    const myLoc = liveLocations.find((l: any) =>
+      currentTrip.devices.some((d: any) => d.id === l.deviceId && d.ownerName === user?.displayName)
+    );
+    if (!myLoc) {
+      setRouteInfo(null);
+      return;
+    }
+    const controller = new AbortController();
+    const fetchRoute = async () => {
+      try {
+        const url = `https://router.project-osrm.org/route/v1/driving/${myLoc.lng},${myLoc.lat};${currentTrip.route!.destinationLng},${currentTrip.route!.destinationLat}?overview=false`;
+        const res = await fetch(url, { signal: controller.signal });
+        const data = await res.json();
+        if (data.code === 'Ok' && data.routes.length > 0) {
+          setRouteInfo({ distance: data.routes[0].distance, duration: data.routes[0].duration });
+        }
+      } catch {}
+    };
+    fetchRoute();
+    return () => controller.abort();
+  }, [liveLocations, currentTrip?.route, user?.displayName, currentTrip?.devices]);
 
   if (loading) {
     return (
@@ -287,29 +315,31 @@ export default function TripPage() {
           </div>
           {currentTrip.route && (
             <div className="absolute bottom-4 left-4 right-16" style={{ zIndex: 1000 }}>
-              {(() => {
-                const myLoc = liveLocations.find((l: any) =>
-                  currentTrip.devices.some((d: any) => d.id === l.deviceId && d.ownerName === user?.displayName)
-                );
-                if (!myLoc) return null;
-                const dist = haversineDistance(myLoc.lat, myLoc.lng, currentTrip.route.destinationLat, currentTrip.route.destinationLng);
-                const speedKmh = (myLoc.speed || 0) * 3.6;
-                const etaHours = speedKmh > 1 ? dist / speedKmh : 0;
-                const arrivalTime = new Date(Date.now() + etaHours * 3600000);
-                return (
-                  <div className="bg-white rounded-xl shadow-lg p-3 flex items-center gap-4">
-                    <div className="text-center">
-                      <div className="text-lg font-bold text-blue-600">{formatTime(etaHours)}</div>
-                      <div className="text-xs text-gray-500">{arrivalTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
-                    </div>
-                    <div className="h-8 w-px bg-gray-200"></div>
-                    <div className="text-center">
-                      <div className="text-lg font-bold text-gray-900">{formatDistance(dist)}</div>
-                      <div className="text-xs text-gray-500">{currentTrip.route.destinationName}</div>
-                    </div>
+              {routeInfo ? (
+                <div className="bg-white rounded-xl shadow-lg p-3 flex items-center gap-4">
+                  <div className="text-center">
+                    <div className="text-lg font-bold text-blue-600">{formatTime(routeInfo.duration / 3600)}</div>
+                    <div className="text-xs text-gray-500">{new Date(Date.now() + routeInfo.duration * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
                   </div>
-                );
-              })()}
+                  <div className="h-8 w-px bg-gray-200"></div>
+                  <div className="text-center">
+                    <div className="text-lg font-bold text-gray-900">{formatDistance(routeInfo.distance / 1000)}</div>
+                    <div className="text-xs text-gray-500">{currentTrip.route.destinationName}</div>
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-white rounded-xl shadow-lg p-3 flex items-center gap-4">
+                  <div className="text-center">
+                    <div className="text-lg font-bold text-gray-400">--</div>
+                    <div className="text-xs text-gray-500">ETA</div>
+                  </div>
+                  <div className="h-8 w-px bg-gray-200"></div>
+                  <div className="text-center">
+                    <div className="text-lg font-bold text-gray-400">--</div>
+                    <div className="text-xs text-gray-500">{currentTrip.route.destinationName}</div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

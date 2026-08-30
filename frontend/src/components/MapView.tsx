@@ -176,19 +176,39 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
     }
   }, [route, mapReady]);
 
-  // Draw lines from each member to destination
+  // Draw lines from each member to destination using OSRM road routes
   useEffect(() => {
     if (!map.current || !route) return;
 
     memberLines.current.forEach(l => map.current?.removeLayer(l));
     memberLines.current = [];
 
-    locations.forEach((loc) => {
-      const line = L.polyline(
-        [[loc.lat, loc.lng], [route.destinationLat, route.destinationLng]],
-        { color: '#60a5fa', weight: 3, opacity: 0.6 }
-      ).addTo(map.current!);
-      memberLines.current.push(line);
+    locations.forEach(async (loc) => {
+      try {
+        const url = `https://router.project-osrm.org/route/v1/driving/${loc.lng},${loc.lat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.code === 'Ok' && data.routes.length > 0) {
+          const coords = data.routes[0].geometry.coordinates.map((c: number[]) => [c[1], c[0]] as L.LatLngExpression);
+          const line = L.polyline(coords, {
+            color: '#1a56db',
+            weight: 5,
+            opacity: 0.8,
+          }).addTo(map.current!);
+          memberLines.current.push(line);
+
+          line.bindTooltip(`${loc.ownerName || 'Member'}: ${(data.routes[0].distance / 1000).toFixed(1)} km, ${formatTime(data.routes[0].duration / 3600)}`, {
+            sticky: true,
+            className: 'bg-white text-xs px-2 py-1 shadow rounded',
+          });
+        }
+      } catch {
+        const line = L.polyline(
+          [[loc.lat, loc.lng], [route.destinationLat, route.destinationLng]],
+          { color: '#60a5fa', weight: 3, opacity: 0.6 }
+        ).addTo(map.current!);
+        memberLines.current.push(line);
+      }
     });
   }, [locations, route]);
 
