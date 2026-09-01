@@ -62,12 +62,76 @@ interface MapViewProps {
 
 export default function MapView({ locations, followDeviceId, route, centerOn, onMapReady }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
+  const svgContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const markers = useRef<Map<string, maplibregl.Marker>>(new Map());
   const destMarker = useRef<maplibregl.Marker | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const routeCoordsRef = useRef<[number, number][]>([]);
+  const memberCoordsRef = useRef<[number, number][]>([]);
 
-  // Initialize map + persistent sources
+  // Project lnglat to screen pixels
+  const projectToScreen = (lng: number, lat: number): { x: number; y: number } | null => {
+    if (!map.current) return null;
+    const p = map.current.project([lng, lat]);
+    return { x: p.x, y: p.y };
+  };
+
+  // Render SVG route lines
+  const renderLines = () => {
+    const svg = svgContainer.current;
+    if (!svg) return;
+    let svgEl = svg.querySelector('svg');
+    if (!svgEl) {
+      svgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svgEl.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:visible;';
+      svg.appendChild(svgEl);
+    }
+
+    // Clear old lines
+    while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
+
+    const routeCoords = routeCoordsRef.current;
+    const memberCoords = memberCoordsRef.current;
+
+    // Draw route line (dark blue)
+    if (routeCoords.length > 1) {
+      const points = routeCoords
+        .map(c => projectToScreen(c[0], c[1]))
+        .filter((p): p is { x: number; y: number } => p !== null);
+      if (points.length > 1) {
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+        path.setAttribute('points', points.map(p => `${p.x},${p.y}`).join(' '));
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', '#1a56db');
+        path.setAttribute('stroke-width', '6');
+        path.setAttribute('stroke-linecap', 'round');
+        path.setAttribute('stroke-linejoin', 'round');
+        path.setAttribute('opacity', '0.9');
+        svgEl.appendChild(path);
+      }
+    }
+
+    // Draw member lines (light blue)
+    if (memberCoords.length > 1) {
+      const points = memberCoords
+        .map(c => projectToScreen(c[0], c[1]))
+        .filter((p): p is { x: number; y: number } => p !== null && !isNaN(p.x) && !isNaN(p.y));
+      if (points.length > 1) {
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+        path.setAttribute('points', points.map(p => `${p.x},${p.y}`).join(' '));
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', '#60a5fa');
+        path.setAttribute('stroke-width', '3');
+        path.setAttribute('stroke-linecap', 'round');
+        path.setAttribute('stroke-linejoin', 'round');
+        path.setAttribute('opacity', '0.7');
+        svgEl.appendChild(path);
+      }
+    }
+  };
+
+  // Initialize map + bind SVG redraw to map events (uses refs so always current)
   useEffect(() => {
     if (!mapContainer.current || map.current) return;
     const m = new maplibregl.Map({
@@ -80,38 +144,33 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
       center: [78.9629, 22.5937], zoom: 5, bearing: 0, pitch: 0,
     });
     m.addControl(new maplibregl.NavigationControl({ showCompass: true, showZoom: true }), 'top-right');
-    m.on('load', () => {
-      // Add sources with empty initial data
-      m.addSource('route-line', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-      m.addSource('member-lines', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-      m.addLayer({ id: 'route-line', type: 'line', source: 'route-line', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#1a56db', 'line-width': 6, 'line-opacity': 0.9 } });
-      m.addLayer({ id: 'member-lines', type: 'line', source: 'member-lines', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#60a5fa', 'line-width': 3, 'line-opacity': 0.7 } });
-      setMapReady(true);
-      onMapReady?.(m);
-    });
+    m.on('load', () => { setMapReady(true); onMapReady?.(m); });
+    // renderLines reads from refs, so always gets current coords
+    m.on('move', renderLines);
+    m.on('zoom', renderLines);
+    m.on('rotate', renderLines);
+    m.on('resize', renderLines);
     map.current = m;
     return () => { m.remove(); map.current = null; };
   }, []);
 
-  // Destination marker — clean + add on route change
+  // Destination marker + fit
   useEffect(() => {
     if (!map.current || !mapReady) return;
     if (destMarker.current) { destMarker.current.remove(); destMarker.current = null; }
-    if (!route) {
-      // Clear route line
-      const src = map.current.getSource('route-line') as maplibregl.GeoJSONSource;
-      src?.setData({ type: 'FeatureCollection', features: [] });
-      const msrc = map.current.getSource('member-lines') as maplibregl.GeoJSONSource;
-      msrc?.setData({ type: 'FeatureCollection', features: [] });
-      return;
-    }
+    routeCoordsRef.current = [];
+    memberCoordsRef.current = [];
+    renderLines();
+
+    if (!route) return;
+
     const destEl = document.createElement('div');
     destEl.innerHTML = `<div style="font-size:32px;text-shadow:0 2px 4px rgba(0,0,0,0.3);">🏁</div>`;
     destMarker.current = new maplibregl.Marker({ element: destEl })
       .setLngLat([route.destinationLng, route.destinationLat])
       .setPopup(new maplibregl.Popup().setHTML(`<b>${route.destinationName}</b><br>Destination`))
       .addTo(map.current);
-    // Fit to destination + locations
+
     const pts: [number, number][] = [[route.destinationLng, route.destinationLat]];
     locations.forEach(l => pts.push([l.lng, l.lat]));
     if (pts.length > 1) {
@@ -122,39 +181,36 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
     }
   }, [route, mapReady]);
 
-  // Route line — fetch OSRM and SET data on persistent source
+  // Fetch OSRM route line + member lines
   useEffect(() => {
     if (!map.current || !mapReady || !route) return;
-    const m = map.current;
-    const sLng = locations.length > 0 ? locations[0].lng : m.getCenter().lng;
-    const sLat = locations.length > 0 ? locations[0].lat : m.getCenter().lat;
 
-    const url = `https://router.project-osrm.org/route/v1/driving/${sLng},${sLat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`;
+    const sLng = locations.length > 0 ? locations[0].lng : map.current.getCenter().lng;
+    const sLat = locations.length > 0 ? locations[0].lat : map.current.getCenter().lat;
 
-    fetch(url)
+    // Fetch main route line
+    fetch(`https://router.project-osrm.org/route/v1/driving/${sLng},${sLat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`)
       .then(r => r.json())
       .then(data => {
-        if (!m || (m as any)._removed) return;
-        const src = m.getSource('route-line') as maplibregl.GeoJSONSource;
-        if (!src) { console.error('[MapView] route-line source not found'); return; }
-
-        let coords: [number, number][];
         if (data.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
-          coords = data.routes[0].geometry.coordinates;
+          routeCoordsRef.current = data.routes[0].geometry.coordinates;
         } else {
-          coords = [[sLng, sLat], [route.destinationLng, route.destinationLat]];
+          routeCoordsRef.current = [[sLng, sLat], [route.destinationLng, route.destinationLat]];
         }
-
-        const feature: any = { type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} };
-        src.setData({ type: 'FeatureCollection', features: [feature] });
-        m.triggerRepaint();
+        renderLines();
       })
-      .catch(err => {
-        console.error('[MapView] OSRM fetch failed:', err);
-        const src = m.getSource('route-line') as maplibregl.GeoJSONSource;
-        const feature: any = { type: 'Feature', geometry: { type: 'LineString', coordinates: [[sLng, sLat], [route.destinationLng, route.destinationLat]] }, properties: {} };
-        src?.setData({ type: 'FeatureCollection', features: [feature] });
+      .catch(() => {
+        routeCoordsRef.current = [[sLng, sLat], [route.destinationLng, route.destinationLat]];
+        renderLines();
       });
+
+    // Fit when locations arrive
+    if (locations.length > 0) {
+      const pts: [number, number][] = [[route.destinationLng, route.destinationLat]];
+      locations.forEach(l => pts.push([l.lng, l.lat]));
+      const bounds = pts.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(pts[0], pts[0]));
+      map.current.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 800 });
+    }
   }, [route, locations, mapReady]);
 
   // Member lines — debounced
@@ -163,8 +219,6 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
     if (!map.current || !mapReady || !route || locations.length === 0) return;
     if (memberTimer.current) clearTimeout(memberTimer.current);
     memberTimer.current = setTimeout(async () => {
-      const m = map.current;
-      if (!m || (m as any)._removed) return;
       const allCoords: [number, number][] = [];
       for (const loc of locations) {
         try {
@@ -178,12 +232,8 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
           allCoords.push([loc.lng, loc.lat], [route.destinationLng, route.destinationLat], [NaN, NaN]);
         }
       }
-      const filtered = allCoords.filter(c => !isNaN(c[0]));
-      if (filtered.length === 0) return;
-      const src = m.getSource('member-lines') as maplibregl.GeoJSONSource;
-      if (!src) return;
-      src.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: filtered }, properties: {} });
-      m.triggerRepaint();
+      memberCoordsRef.current = allCoords.filter(c => !isNaN(c[0]));
+      renderLines();
     }, 2000);
     return () => { if (memberTimer.current) clearTimeout(memberTimer.current); };
   }, [locations, route, mapReady]);
@@ -233,7 +283,12 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
     }
   }, [locations, followDeviceId, mapReady]);
 
-  return <div ref={mapContainer} className="w-full h-full" />;
+  return (
+    <div className="relative w-full h-full">
+      <div ref={mapContainer} className="w-full h-full" />
+      <div ref={svgContainer} className="absolute inset-0 pointer-events-none" style={{ zIndex: 400 }} />
+    </div>
+  );
 }
 
 export { haversineDistance, formatDistance, formatTime };
