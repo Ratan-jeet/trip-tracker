@@ -11,6 +11,7 @@ import DeviceToggle from '@/components/DeviceToggle';
 import HistoryModal from '@/components/HistoryModal';
 import SetRouteModal from '@/components/SetRouteModal';
 import FloatingIndicators from '@/components/FloatingIndicators';
+import NavigationBanner, { NavStep } from '@/components/NavigationBanner';
 import dayjs from 'dayjs';
 import * as maplibregl from 'maplibre-gl';
 
@@ -32,6 +33,10 @@ export default function TripPage() {
   const [trackingInterval, setTrackingInterval] = useState<NodeJS.Timeout | null>(null);
   const [mapInstance, setMapInstance] = useState<maplibregl.Map | null>(null);
   const [myDeviceId, setMyDeviceId] = useState<string | null>(null);
+  const [navSteps, setNavSteps] = useState<NavStep[]>([]);
+  const [navTotalDist, setNavTotalDist] = useState(0);
+  const [navTotalDur, setNavTotalDur] = useState(0);
+  const [userHeading, setUserHeading] = useState<number | null>(null);
 
   useWebSocket(tripId);
 
@@ -63,6 +68,11 @@ export default function TripPage() {
     const watchId = navigator.geolocation.watchPosition(
       async (position) => {
         const { latitude: lat, longitude: lng, accuracy, speed, heading } = position.coords;
+
+        // Capture heading for map rotation
+        if (heading != null && !isNaN(heading)) {
+          setUserHeading(heading);
+        }
 
         let batteryLevel: number | undefined;
         if ('getBattery' in navigator) {
@@ -152,10 +162,11 @@ export default function TripPage() {
     }
   };
 
-  // Fetch OSRM route info when location or route changes
+  // Fetch OSRM route info with steps when location or route changes
   useEffect(() => {
     if (!currentTrip?.route || liveLocations.length === 0) {
       setRouteInfo(null);
+      setNavSteps([]);
       return;
     }
     const myLoc = liveLocations.find((l: any) =>
@@ -163,16 +174,35 @@ export default function TripPage() {
     );
     if (!myLoc) {
       setRouteInfo(null);
+      setNavSteps([]);
       return;
     }
     const controller = new AbortController();
     const fetchRoute = async () => {
       try {
-        const url = `https://router.project-osrm.org/route/v1/driving/${myLoc.lng},${myLoc.lat};${currentTrip.route!.destinationLng},${currentTrip.route!.destinationLat}?overview=false`;
+        const url = `https://router.project-osrm.org/route/v1/driving/${myLoc.lng},${myLoc.lat};${currentTrip.route!.destinationLng},${currentTrip.route!.destinationLat}?overview=full&geometries=geojson&steps=true`;
         const res = await fetch(url, { signal: controller.signal });
         const data = await res.json();
         if (data.code === 'Ok' && data.routes.length > 0) {
-          setRouteInfo({ distance: data.routes[0].distance, duration: data.routes[0].duration });
+          const r = data.routes[0];
+          setRouteInfo({ distance: r.distance, duration: r.duration });
+
+          // Parse steps for navigation
+          const leg = r.legs[0];
+          if (leg?.steps) {
+            const parsed: NavStep[] = leg.steps.map((s: any) => ({
+              type: s.maneuver.type,
+              modifier: s.maneuver.modifier,
+              name: s.name || '',
+              distance: s.distance,
+              duration: s.duration,
+              instruction: s.maneuver.type === 'arrive' ? 'Arrive at destination' : `${s.maneuver.type} ${s.maneuver.modifier || ''} onto ${s.name || 'road'}`,
+              coordinates: s.geometry?.coordinates || [],
+            }));
+            setNavSteps(parsed);
+            setNavTotalDist(r.distance);
+            setNavTotalDur(r.duration);
+          }
         }
       } catch {}
     };
@@ -285,7 +315,24 @@ export default function TripPage() {
             route={currentTrip.route}
             centerOn={centerOn}
             onMapReady={(m) => setMapInstance(m)}
+            heading={userHeading}
+            isFollowing={!!followDeviceId}
           />
+          {followDeviceId && currentTrip.route && navSteps.length > 0 && (() => {
+            const followLoc = filteredLocations.find((l: any) => l.deviceId === followDeviceId);
+            if (!followLoc) return null;
+            return (
+              <NavigationBanner
+                steps={navSteps}
+                userLat={followLoc.lat}
+                userLng={followLoc.lng}
+                totalDistance={navTotalDist}
+                totalDuration={navTotalDur}
+                destinationName={currentTrip.route.destinationName}
+                visible={true}
+              />
+            );
+          })()}
           <FloatingIndicators
             mapInstance={mapInstance}
             locations={filteredLocations}

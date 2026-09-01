@@ -58,9 +58,11 @@ interface MapViewProps {
   route?: { destinationName: string; destinationLat: number; destinationLng: number; waypoints: { lat: number; lng: number }[] } | null;
   centerOn?: { lat: number; lng: number } | null;
   onMapReady?: (map: maplibregl.Map) => void;
+  heading?: number | null;
+  isFollowing?: boolean;
 }
 
-export default function MapView({ locations, followDeviceId, route, centerOn, onMapReady }: MapViewProps) {
+export default function MapView({ locations, followDeviceId, route, centerOn, onMapReady, heading, isFollowing }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const svgContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
@@ -69,6 +71,7 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
   const [mapReady, setMapReady] = useState(false);
   const routeCoordsRef = useRef<[number, number][]>([]);
   const memberCoordsRef = useRef<[number, number][]>([]);
+  const smoothedBearing = useRef<number | null>(null);
 
   // Project lnglat to screen pixels
   const projectToScreen = (lng: number, lat: number): { x: number; y: number } | null => {
@@ -282,6 +285,54 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
       if (f && map.current) map.current.easeTo({ center: [f.lng, f.lat], zoom: 16, duration: 1000 });
     }
   }, [locations, followDeviceId, mapReady]);
+
+  // Smooth heading rotation — EMA + dead zone + min speed
+  useEffect(() => {
+    if (!map.current || !mapReady) return;
+
+    // Not following or no heading → ease back to north
+    if (!isFollowing || heading == null || heading < 0) {
+      if (smoothedBearing.current !== null) {
+        smoothedBearing.current = null;
+        map.current.easeTo({ bearing: 0, duration: 500 });
+      }
+      return;
+    }
+
+    const EMA_ALPHA = 0.3;
+    const DEAD_ZONE = 5;
+    const MIN_SPEED_KMH = 3;
+
+    // Find followed device speed
+    const followLoc = followDeviceId ? locations.find((l: any) => l.deviceId === followDeviceId) : null;
+    const speedKmh = followLoc?.speed ? followLoc.speed * 3.6 : 0;
+
+    // Only rotate when moving
+    if (speedKmh < MIN_SPEED_KMH) return;
+
+    const targetBearing = heading;
+
+    // EMA smoothing
+    if (smoothedBearing.current === null) {
+      smoothedBearing.current = targetBearing;
+    } else {
+      // Handle wrap-around (350° → 10° should go through 0, not 180)
+      let diff = targetBearing - smoothedBearing.current;
+      if (diff > 180) diff -= 360;
+      if (diff < -180) diff += 360;
+      smoothedBearing.current = (smoothedBearing.current + diff * EMA_ALPHA + 360) % 360;
+    }
+
+    // Dead zone — ignore micro changes
+    const currentBearing = map.current.getBearing();
+    const bearingDiff = Math.abs(smoothedBearing.current - ((currentBearing + 360) % 360));
+    if (bearingDiff < DEAD_ZONE || bearingDiff > 360 - DEAD_ZONE) return;
+
+    map.current.easeTo({
+      bearing: -smoothedBearing.current,
+      duration: 300,
+    });
+  }, [heading, isFollowing, followDeviceId, locations, mapReady]);
 
   return (
     <div className="relative w-full h-full">
