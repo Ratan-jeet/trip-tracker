@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
@@ -76,187 +76,133 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
   const map = useRef<maplibregl.Map | null>(null);
   const markers = useRef<Map<string, maplibregl.Marker>>(new Map());
   const destMarker = useRef<maplibregl.Marker | null>(null);
-  const initialized = useRef(false);
-  const locationsFitted = useRef(false);
+  const routeSourceAdded = useRef(false);
+  const memberSourceAdded = useRef(false);
+  const routeFitted = useRef<string | null>(null);
   const [mapReady, setMapReady] = useState(false);
 
   // Initialize map
   useEffect(() => {
-    if (!mapContainer.current || initialized.current) return;
-    initialized.current = true;
+    if (!mapContainer.current || map.current) return;
 
-    map.current = new maplibregl.Map({
+    const m = new maplibregl.Map({
       container: mapContainer.current,
       style: {
         version: 8,
         sources: {
-          osm: {
-            type: 'raster',
-            tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-            tileSize: 256,
-            attribution: '© OpenStreetMap contributors',
-          },
+          osm: { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256, attribution: '© OpenStreetMap' },
         },
-        layers: [
-          {
-            id: 'osm',
-            type: 'raster',
-            source: 'osm',
-            minzoom: 0,
-            maxzoom: 19,
-          },
-        ],
+        layers: [{ id: 'osm', type: 'raster', source: 'osm', minzoom: 0, maxzoom: 19 }],
       },
       center: [78.9629, 22.5937],
       zoom: 5,
       bearing: 0,
       pitch: 0,
-      maxPitch: 60,
     });
+    m.addControl(new maplibregl.NavigationControl({ showCompass: true, showZoom: true }), 'top-right');
 
-    map.current.addControl(new maplibregl.NavigationControl({ showCompass: true, showZoom: true }), 'top-right');
-
-    map.current.on('load', () => {
+    m.on('load', () => {
+      // Add persistent sources once
+      m.addSource('route-line', { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] }, properties: {} } });
+      m.addLayer({
+        id: 'route-line', type: 'line', source: 'route-line',
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: { 'line-color': '#1a56db', 'line-width': 6, 'line-opacity': 0.9 },
+      });
+      m.addSource('member-lines', { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] }, properties: {} } });
+      m.addLayer({
+        id: 'member-lines', type: 'line', source: 'member-lines',
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: { 'line-color': '#60a5fa', 'line-width': 3, 'line-opacity': 0.7 },
+      });
+      routeSourceAdded.current = true;
+      memberSourceAdded.current = true;
       setMapReady(true);
-      if (onMapReady && map.current) onMapReady(map.current);
+      onMapReady?.(m);
     });
 
-    return () => {
-      map.current?.remove();
-      map.current = null;
-      initialized.current = false;
-    };
+    map.current = m;
+    return () => { m.remove(); map.current = null; };
   }, []);
 
-  // Enable compass-based rotation (manual only via map controls)
-
-  // Destination marker + route line — runs only when route changes or map first loads
-  const routeLineReady = useRef(false);
+  // Route line — always updates via setData, never removes source
   useEffect(() => {
-    if (!map.current || !mapReady) return;
+    if (!map.current || !mapReady || !routeSourceAdded.current) return;
+    const m = map.current;
 
-    // Clean old
+    // Destination marker
     if (destMarker.current) { destMarker.current.remove(); destMarker.current = null; }
-    if (map.current.getLayer('route-line')) map.current.removeLayer('route-line');
-    if (map.current.getSource('route-line')) map.current.removeSource('route-line');
-    if (map.current.getLayer('member-lines')) map.current.removeLayer('member-lines');
-    if (map.current.getSource('member-lines')) map.current.removeSource('member-lines');
-    routeLineReady.current = false;
+    if (!route) {
+      (m.getSource('route-line') as maplibregl.GeoJSONSource)?.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] }, properties: {} });
+      (m.getSource('member-lines') as maplibregl.GeoJSONSource)?.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [] }, properties: {} });
+      return;
+    }
 
-    if (!route) return;
-
-    // 1) Destination marker
     const destEl = document.createElement('div');
     destEl.innerHTML = `<div style="font-size:32px;text-shadow:0 2px 4px rgba(0,0,0,0.3);">🏁</div>`;
     destMarker.current = new maplibregl.Marker({ element: destEl })
       .setLngLat([route.destinationLng, route.destinationLat])
       .setPopup(new maplibregl.Popup().setHTML(`<b>${route.destinationName}</b><br>Destination`))
-      .addTo(map.current);
+      .addTo(m);
 
-    // 2) Route line — straight dashed line immediately, then replace with OSRM road path
-    const sLng = locations.length > 0 ? locations[0].lng : map.current.getCenter().lng;
-    const sLat = locations.length > 0 ? locations[0].lat : map.current.getCenter().lat;
-    const fallbackCoords: [number, number][] = [[sLng, sLat], [route.destinationLng, route.destinationLat]];
-    map.current.addSource('route-line', {
-      type: 'geojson',
-      data: { type: 'Feature', geometry: { type: 'LineString', coordinates: fallbackCoords }, properties: {} },
-    });
-    map.current.addLayer({
-      id: 'route-line', type: 'line', source: 'route-line',
-      layout: { 'line-join': 'round', 'line-cap': 'round' },
-      paint: { 'line-color': '#1a56db', 'line-width': 6, 'line-opacity': 0.9, 'line-dasharray': [4, 4] },
-    });
+    // Fit map
+    const destKey = `${route.destinationLat},${route.destinationLng}`;
+    if (routeFitted.current !== destKey) {
+      routeFitted.current = destKey;
+      const allPts: [number, number][] = [[route.destinationLng, route.destinationLat]];
+      locations.forEach(l => allPts.push([l.lng, l.lat]));
+      if (allPts.length > 1) {
+        const bounds = allPts.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(allPts[0], allPts[0]));
+        m.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 800 });
+      } else {
+        m.easeTo({ center: [route.destinationLng, route.destinationLat], zoom: 12, duration: 600 });
+      }
+    }
+  }, [route, mapReady]);
 
-    // 3) Replace with OSRM road path
+  // Route line data — fetch OSRM and update source (runs when locations change too)
+  useEffect(() => {
+    if (!map.current || !mapReady || !route || !routeSourceAdded.current) return;
+    const m = map.current;
+    const src = m.getSource('route-line') as maplibregl.GeoJSONSource | undefined;
+    if (!src) return;
+
+    const sLng = locations.length > 0 ? locations[0].lng : m.getCenter().lng;
+    const sLat = locations.length > 0 ? locations[0].lat : m.getCenter().lat;
+
     fetch(`https://router.project-osrm.org/route/v1/driving/${sLng},${sLat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`)
       .then(r => r.json())
       .then(data => {
         if (!map.current || (map.current as any)._removed) return;
-        const src = map.current.getSource('route-line') as maplibregl.GeoJSONSource | undefined;
-        if (!src) return;
+        const s = map.current.getSource('route-line') as maplibregl.GeoJSONSource | undefined;
+        if (!s) return;
         if (data.code === 'Ok' && data.routes.length > 0) {
-          src.setData({
-            type: 'Feature',
-            geometry: { type: 'LineString', coordinates: data.routes[0].geometry.coordinates as [number, number][] },
-            properties: {},
-          });
-        }
-        // Remove dasharray for solid line — remove and re-add layer without dash
-        if (map.current.getLayer('route-line')) {
-          const src = map.current.getSource('route-line') as maplibregl.GeoJSONSource | undefined;
-          const data = src?.serialize();
-          map.current.removeLayer('route-line');
-          map.current.removeSource('route-line');
-          if (data) {
-            map.current.addSource('route-line', data as any);
-            map.current.addLayer({
-              id: 'route-line', type: 'line', source: 'route-line',
-              layout: { 'line-join': 'round', 'line-cap': 'round' },
-              paint: { 'line-color': '#1a56db', 'line-width': 6, 'line-opacity': 0.9 },
-            });
-          }
+          s.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: data.routes[0].geometry.coordinates }, properties: {} });
+        } else {
+          s.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [[sLng, sLat], [route.destinationLng, route.destinationLat]] }, properties: {} });
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        const s = map.current?.getSource('route-line') as maplibregl.GeoJSONSource | undefined;
+        s?.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: [[sLng, sLat], [route.destinationLng, route.destinationLat]] }, properties: {} });
+      });
 
-    routeLineReady.current = true;
-    refitOnFirstLoc.current = locations.length === 0;
-
-    // 4) Fit map to show both location + destination
+    // Fit when locations first arrive
     if (locations.length > 0) {
       const allPts: [number, number][] = [[route.destinationLng, route.destinationLat]];
       locations.forEach(l => allPts.push([l.lng, l.lat]));
       const bounds = allPts.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(allPts[0], allPts[0]));
-      map.current.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 800 });
-    } else {
-      map.current.easeTo({ center: [route.destinationLng, route.destinationLat], zoom: 12, duration: 600 });
+      m.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 800 });
     }
-  }, [route, mapReady]); // ← only depends on route + mapReady, NOT locations
+  }, [locations, route, mapReady]);
 
-  // Refit when first location arrives after route was set without locations
-  const refitOnFirstLoc = useRef(false);
+  // Member lines — debounced
+  const memberTimer = useRef<any>(null);
   useEffect(() => {
-    if (!map.current || !route || locations.length === 0) return;
-    if (refitOnFirstLoc.current) return;
-    refitOnFirstLoc.current = true;
-    const allPts: [number, number][] = [[route.destinationLng, route.destinationLat]];
-    locations.forEach(l => allPts.push([l.lng, l.lat]));
-    const bounds = allPts.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(allPts[0], allPts[0]));
-    map.current.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 800 });
-
-    // Also update route line start point to actual location (not map center)
-    if (map.current.getSource('route-line')) {
-      const s = locations[0];
-      fetch(`https://router.project-osrm.org/route/v1/driving/${s.lng},${s.lat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`)
-        .then(r => r.json())
-        .then(data => {
-          const src = map.current?.getSource('route-line') as maplibregl.GeoJSONSource | undefined;
-          if (src && data.code === 'Ok' && data.routes.length > 0) {
-            // Remove old layer, add solid version
-            if (map.current?.getLayer('route-line')) map.current.removeLayer('route-line');
-            if (map.current?.getSource('route-line')) map.current.removeSource('route-line');
-            map.current?.addSource('route-line', {
-              type: 'geojson',
-              data: { type: 'Feature', geometry: { type: 'LineString', coordinates: data.routes[0].geometry.coordinates as [number, number][] }, properties: {} },
-            });
-            map.current?.addLayer({
-              id: 'route-line', type: 'line', source: 'route-line',
-              layout: { 'line-join': 'round', 'line-cap': 'round' },
-              paint: { 'line-color': '#1a56db', 'line-width': 6, 'line-opacity': 0.9 },
-            });
-          }
-        })
-        .catch(() => {});
-    }
-  }, [locations, route]);
-
-  // Member-to-destination lines — drawn after route line, debounced
-  const memberLinesTimer = useRef<any>(null);
-  useEffect(() => {
-    if (!map.current || !mapReady || !route || locations.length === 0) return;
-    if (memberLinesTimer.current) clearTimeout(memberLinesTimer.current);
-    memberLinesTimer.current = setTimeout(async () => {
-      if (!map.current || (map.current as any)._removed || map.current.getSource('member-lines')) return;
+    if (!map.current || !mapReady || !route || locations.length === 0 || !memberSourceAdded.current) return;
+    if (memberTimer.current) clearTimeout(memberTimer.current);
+    memberTimer.current = setTimeout(async () => {
+      if (!map.current || (map.current as any)._removed) return;
       const allCoords: [number, number][] = [];
       for (const loc of locations) {
         try {
@@ -270,20 +216,12 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
           allCoords.push([loc.lng, loc.lat], [route.destinationLng, route.destinationLat], [NaN, NaN]);
         }
       }
-      if (!map.current || (map.current as any)._removed || map.current.getSource('member-lines')) return;
       const filtered = allCoords.filter(c => !isNaN(c[0]));
       if (filtered.length === 0) return;
-      map.current.addSource('member-lines', {
-        type: 'geojson',
-        data: { type: 'Feature', geometry: { type: 'LineString', coordinates: filtered }, properties: {} },
-      });
-      map.current.addLayer({
-        id: 'member-lines', type: 'line', source: 'member-lines',
-        layout: { 'line-join': 'round', 'line-cap': 'round' },
-        paint: { 'line-color': '#60a5fa', 'line-width': 3, 'line-opacity': 0.7 },
-      });
+      const s = map.current?.getSource('member-lines') as maplibregl.GeoJSONSource | undefined;
+      s?.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: filtered }, properties: {} });
     }, 2000);
-    return () => { if (memberLinesTimer.current) clearTimeout(memberLinesTimer.current); };
+    return () => { if (memberTimer.current) clearTimeout(memberTimer.current); };
   }, [locations, route, mapReady]);
 
   // Center on location
@@ -296,41 +234,29 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
   useEffect(() => {
     if (!map.current || !mapReady) return;
 
-    // Cluster nearby markers
     const clusters: { lat: number; lng: number; members: number[] }[] = [];
     locations.forEach((loc, i) => {
-      const cluster = clusters.find(c =>
-        Math.abs(c.lat - loc.lat) < 0.0003 && Math.abs(c.lng - loc.lng) < 0.0003
-      );
-      if (cluster) {
-        cluster.members.push(i);
-      } else {
-        clusters.push({ lat: loc.lat, lng: loc.lng, members: [i] });
-      }
+      const cluster = clusters.find(c => Math.abs(c.lat - loc.lat) < 0.0003 && Math.abs(c.lng - loc.lng) < 0.0003);
+      if (cluster) cluster.members.push(i);
+      else clusters.push({ lat: loc.lat, lng: loc.lng, members: [i] });
     });
-
     const offsets = new Map<number, number>();
     clusters.forEach(cluster => {
-      if (cluster.members.length > 1) {
-        cluster.members.forEach((idx, i) => offsets.set(idx, i * 30));
-      }
+      if (cluster.members.length > 1) cluster.members.forEach((idx, i) => offsets.set(idx, i * 30));
     });
 
     locations.forEach((loc, idx) => {
       const { deviceId, lat, lng, deviceType, ownerName, speed, batteryLevel, isStale, heading, accuracy, timestamp, deviceName } = loc;
       const offsetPx = offsets.get(idx) || 0;
       const offsetLat = lat + (offsetPx * 0.00001);
-
-      const popupHtml = `
-        <div style="min-width:140px;font-family:system-ui,sans-serif;">
-          <div style="font-weight:bold;font-size:13px;margin-bottom:4px;">${ownerName || deviceName}</div>
-          <div style="font-size:11px;">
-            ${speed ? `<div>Speed: ${(speed * 3.6).toFixed(1)} km/h</div>` : ''}
-            ${accuracy ? `<div>Accuracy: ${accuracy.toFixed(0)}m</div>` : ''}
-            <div style="color:#999;">${new Date(timestamp).toLocaleTimeString()}</div>
-          </div>
+      const popupHtml = `<div style="min-width:140px;font-family:system-ui,sans-serif;">
+        <div style="font-weight:bold;font-size:13px;margin-bottom:4px;">${ownerName || deviceName}</div>
+        <div style="font-size:11px;">
+          ${speed ? `<div>Speed: ${(speed * 3.6).toFixed(1)} km/h</div>` : ''}
+          ${accuracy ? `<div>Accuracy: ${accuracy.toFixed(0)}m</div>` : ''}
+          <div style="color:#999;">${new Date(timestamp).toLocaleTimeString()}</div>
         </div>
-      `;
+      </div>`;
 
       if (!markers.current.has(deviceId)) {
         const el = document.createElement('div');
@@ -343,32 +269,17 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
       } else {
         const marker = markers.current.get(deviceId)!;
         marker.setLngLat([lng, offsetLat]);
-        const el = marker.getElement();
-        el.innerHTML = createMarkerHtml(deviceType, isStale, batteryLevel, ownerName, speed, heading);
+        marker.getElement().innerHTML = createMarkerHtml(deviceType, isStale, batteryLevel, ownerName, speed, heading);
       }
     });
 
-    // Remove stale markers
     markers.current.forEach((marker, id) => {
-      if (!locations.find((l: any) => l.deviceId === id)) {
-        marker.remove();
-        markers.current.delete(id);
-      }
+      if (!locations.find((l: any) => l.deviceId === id)) { marker.remove(); markers.current.delete(id); }
     });
 
-    // Follow device
     if (followDeviceId) {
       const followLoc = locations.find((l: any) => l.deviceId === followDeviceId);
-      if (followLoc && map.current) {
-        map.current.easeTo({ center: [followLoc.lng, followLoc.lat], zoom: 16, duration: 1000 });
-      }
-    } else if (locations.length > 0 && !locationsFitted.current) {
-      locationsFitted.current = true;
-      const bounds = locations.reduce(
-        (b, l) => b.extend([l.lng, l.lat]),
-        new maplibregl.LngLatBounds([locations[0].lng, locations[0].lat], [locations[0].lng, locations[0].lat])
-      );
-      map.current?.fitBounds(bounds, { padding: 50, maxZoom: 15 });
+      if (followLoc && map.current) map.current.easeTo({ center: [followLoc.lng, followLoc.lat], zoom: 16, duration: 1000 });
     }
   }, [locations, followDeviceId, mapReady]);
 
