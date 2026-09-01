@@ -68,9 +68,10 @@ interface MapViewProps {
     waypoints: { lat: number; lng: number }[];
   } | null;
   centerOn?: { lat: number; lng: number } | null;
+  onMapReady?: (map: maplibregl.Map) => void;
 }
 
-export default function MapView({ locations, followDeviceId, route, centerOn }: MapViewProps) {
+export default function MapView({ locations, followDeviceId, route, centerOn, onMapReady }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const markers = useRef<Map<string, maplibregl.Marker>>(new Map());
@@ -78,9 +79,8 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
   const memberLinesSource = useRef<string>('member-lines');
   const destMarker = useRef<maplibregl.Marker | null>(null);
   const initialized = useRef(false);
-  const hasFitted = useRef(false);
+  const locationsFitted = useRef(false);
   const [mapReady, setMapReady] = useState(false);
-  const [bearing, setBearing] = useState(0);
 
   // Initialize map
   useEffect(() => {
@@ -120,6 +120,7 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
 
     map.current.on('load', () => {
       setMapReady(true);
+      if (onMapReady && map.current) onMapReady(map.current);
     });
 
     return () => {
@@ -129,52 +130,7 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
     };
   }, []);
 
-  // Enable compass-based rotation
-  useEffect(() => {
-    if (!map.current) return;
-    const handleRotate = () => {
-      if (map.current) setBearing(map.current.getBearing());
-    };
-    map.current.on('rotate', handleRotate);
-    return () => { map.current?.off('rotate', handleRotate); };
-  }, [mapReady]);
-
-  // Device heading → rotate map
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.DeviceOrientationEvent) return;
-
-    const handler = (e: DeviceOrientationEvent) => {
-      let heading = e.alpha;
-      if (heading === null || heading === undefined) return;
-      // iOS: webkitCompassHeading is compass heading (0=N, clockwise)
-      if ((e as any).webkitCompassHeading !== undefined) {
-        heading = (e as any).webkitCompassHeading;
-      } else {
-        heading = 360 - heading; // Convert alpha to compass heading
-      }
-      if (map.current && heading != null && !map.current.isRotating()) {
-        map.current.setBearing(-heading);
-      }
-    };
-
-    // Request permission on iOS 13+
-    if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
-      (DeviceOrientationEvent as any).requestPermission().then((state: string) => {
-        if (state === 'granted') {
-          window.addEventListener('deviceorientationabsolute', handler, true);
-          window.addEventListener('deviceorientation', handler, true);
-        }
-      });
-    } else {
-      window.addEventListener('deviceorientationabsolute', handler, true);
-      window.addEventListener('deviceorientation', handler, true);
-    }
-
-    return () => {
-      window.removeEventListener('deviceorientationabsolute', handler, true);
-      window.removeEventListener('deviceorientation', handler, true);
-    };
-  }, [mapReady]);
+  // Enable compass-based rotation (manual only via map controls)
 
   // Draw route
   useEffect(() => {
@@ -200,35 +156,41 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
       .setPopup(new maplibregl.Popup().setHTML(`<b>${route.destinationName}</b><br>Destination`))
       .addTo(map.current);
 
-    // Route line (waypoints to destination)
-    if (route.waypoints && route.waypoints.length > 0) {
-      const coords = [...route.waypoints.map(wp => [wp.lng, wp.lat] as [number, number]), [route.destinationLng, route.destinationLat]];
-      map.current.addSource('route-line', {
-        type: 'geojson',
-        data: { type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} },
-      });
-      map.current.addLayer({
-        id: 'route-line',
-        type: 'line',
-        source: 'route-line',
-        layout: { 'line-join': 'round', 'line-cap': 'round' },
-        paint: { 'line-color': '#1a56db', 'line-width': 6, 'line-opacity': 0.9 },
-      });
-    }
+    // Route line: use OSRM to get road-based path from first member to destination
+    const drawRouteLine = async () => {
+      if (locations.length === 0) return;
+      const start = locations[0];
+      try {
+        const url = `https://router.project-osrm.org/route/v1/driving/${start.lng},${start.lat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.code === 'Ok' && data.routes.length > 0 && map.current && !(map.current as any)._removed) {
+          const coords = data.routes[0].geometry.coordinates as [number, number][];
+          map.current.addSource('route-line', {
+            type: 'geojson',
+            data: { type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} },
+          });
+          map.current.addLayer({
+            id: 'route-line',
+            type: 'line',
+            source: 'route-line',
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': '#1a56db', 'line-width': 6, 'line-opacity': 0.9 },
+          });
+        }
+      } catch {}
+    };
+    drawRouteLine();
 
-    // Fit bounds
-    if (!hasFitted.current) {
-      const allPts: [number, number][] = [[route.destinationLng, route.destinationLat]];
-      locations.forEach(l => allPts.push([l.lng, l.lat]));
-      if (route.waypoints) route.waypoints.forEach(wp => allPts.push([wp.lng, wp.lat]));
-      if (allPts.length > 1) {
-        const bounds = allPts.reduce(
-          (b, coord) => b.extend(coord),
-          new maplibregl.LngLatBounds(allPts[0], allPts[0])
-        );
-        map.current.fitBounds(bounds, { padding: 50, maxZoom: 15 });
-      }
-      hasFitted.current = true;
+    // Fit bounds to show route
+    const allPts: [number, number][] = [[route.destinationLng, route.destinationLat]];
+    locations.forEach(l => allPts.push([l.lng, l.lat]));
+    if (allPts.length > 1) {
+      const bounds = allPts.reduce(
+        (b, coord) => b.extend(coord),
+        new maplibregl.LngLatBounds(allPts[0], allPts[0])
+      );
+      map.current.fitBounds(bounds, { padding: 50, maxZoom: 15 });
     }
   }, [route, mapReady]);
 
@@ -356,8 +318,8 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
       if (followLoc && map.current) {
         map.current.easeTo({ center: [followLoc.lng, followLoc.lat], zoom: 16, duration: 1000 });
       }
-    } else if (locations.length > 0 && !hasFitted.current) {
-      hasFitted.current = true;
+    } else if (locations.length > 0 && !locationsFitted.current) {
+      locationsFitted.current = true;
       const bounds = locations.reduce(
         (b, l) => b.extend([l.lng, l.lat]),
         new maplibregl.LngLatBounds([locations[0].lng, locations[0].lat], [locations[0].lng, locations[0].lat])

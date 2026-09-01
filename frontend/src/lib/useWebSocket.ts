@@ -11,6 +11,7 @@ export function useWebSocket(tripId: string | null) {
   const token = useStore(s => s.token);
   const addLiveLocation = useStore(s => s.addLiveLocation);
   const updateLiveLocations = useStore(s => s.updateLiveLocations);
+  const setTripRoute = useStore(s => s.setTripRoute);
 
   // Fetch live locations via REST immediately and poll
   useEffect(() => {
@@ -66,6 +67,10 @@ export function useWebSocket(tripId: string | null) {
           isStale: false,
         });
       }
+
+      if (data.type === 'route_update') {
+        setTripRoute(data.route || null);
+      }
     };
 
     ws.onclose = () => {
@@ -75,7 +80,7 @@ export function useWebSocket(tripId: string | null) {
     ws.onerror = () => {
       ws.close();
     };
-  }, [token, tripId, addLiveLocation, updateLiveLocations]);
+  }, [token, tripId, addLiveLocation, updateLiveLocations, setTripRoute]);
 
   useEffect(() => {
     connect();

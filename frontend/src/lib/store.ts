@@ -98,6 +98,7 @@ interface AppState {
   addLiveLocation: (location: LiveLocation) => void;
   setFilter: (filter: 'all' | 'phone' | 'vehicle') => void;
   setFollowDevice: (deviceId: string | null) => void;
+  setTripRoute: (route: TripDetail['route']) => void;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -205,4 +206,8 @@ export const useStore = create<AppState>((set, get) => ({
   setFilter: (filter) => set({ filter }),
 
   setFollowDevice: (deviceId) => set({ followDeviceId: deviceId }),
+
+  setTripRoute: (route: TripDetail['route']) => set((state) => ({
+    currentTrip: state.currentTrip ? { ...state.currentTrip, route } : null,
+  })),
 }));

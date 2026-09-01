@@ -131,3 +131,12 @@ export async function broadcastToTrip(tripId: string, data: any) {
     if (socket.readyState === WebSocket.OPEN) socket.send(message);
   });
 }
+
+export function broadcastTripEvent(tripId: string, event: any) {
+  const connections = tripConnections.get(tripId);
+  if (!connections) return;
+  const message = JSON.stringify(event);
+  connections.forEach((socket) => {
+    if (socket.readyState === WebSocket.OPEN) socket.send(message);
+  });
+}

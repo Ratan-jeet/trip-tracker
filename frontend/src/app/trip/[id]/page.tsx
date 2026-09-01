@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { useStore } from '@/lib/store';
 import { useWebSocket } from '@/lib/useWebSocket';
@@ -10,7 +10,9 @@ import MemberList from '@/components/MemberList';
 import DeviceToggle from '@/components/DeviceToggle';
 import HistoryModal from '@/components/HistoryModal';
 import SetRouteModal from '@/components/SetRouteModal';
+import FloatingIndicators from '@/components/FloatingIndicators';
 import dayjs from 'dayjs';
+import * as maplibregl from 'maplibre-gl';
 
 export default function TripPage() {
   const router = useRouter();
@@ -28,6 +30,8 @@ export default function TripPage() {
   const [centerOn, setCenterOn] = useState<{ lat: number; lng: number } | null>(null);
   const [routeInfo, setRouteInfo] = useState<{ distance: number; duration: number } | null>(null);
   const [trackingInterval, setTrackingInterval] = useState<NodeJS.Timeout | null>(null);
+  const [mapInstance, setMapInstance] = useState<maplibregl.Map | null>(null);
+  const [myDeviceId, setMyDeviceId] = useState<string | null>(null);
 
   useWebSocket(tripId);
 
@@ -53,6 +57,8 @@ export default function TripPage() {
       }));
       phoneDevice = result;
     }
+
+    setMyDeviceId(phoneDevice.id);
 
     const watchId = navigator.geolocation.watchPosition(
       async (position) => {
@@ -278,6 +284,14 @@ export default function TripPage() {
             followDeviceId={followDeviceId}
             route={currentTrip.route}
             centerOn={centerOn}
+            onMapReady={(m) => setMapInstance(m)}
+          />
+          <FloatingIndicators
+            mapInstance={mapInstance}
+            locations={filteredLocations}
+            currentUserId={user?.id}
+            myDeviceId={myDeviceId}
+            onCenter={(lat, lng) => setCenterOn({ lat, lng })}
           />
           <div className="absolute top-4 left-4" style={{ zIndex: 1000 }}>
             <DeviceToggle filter={filter} onChange={setFilter} />

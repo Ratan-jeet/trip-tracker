@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { queryOne, queryAll, run } from '../db/helpers';
+import { broadcastTripEvent } from '../websocket';
 
 const createTripSchema = z.object({
   name: z.string().min(1).max(200),
@@ -291,6 +292,13 @@ export default async function tripRoutes(app: FastifyInstance) {
       [routeId, tripId, destinationName, destinationLat, destinationLng, JSON.stringify(waypoints || []), userId]
     );
 
+    broadcastTripEvent(tripId, {
+      type: 'route_update',
+      route: {
+        id: routeId, destinationName, destinationLat, destinationLng, waypoints: waypoints || [], createdBy: userId,
+      },
+    });
+
     return reply.status(201).send({
       id: routeId, destinationName, destinationLat, destinationLng, waypoints: waypoints || [], createdBy: userId,
     });
@@ -308,6 +316,7 @@ export default async function tripRoutes(app: FastifyInstance) {
     }
 
     await run('DELETE FROM trip_routes WHERE trip_id = $1', [tripId]);
+    broadcastTripEvent(tripId, { type: 'route_update', route: null });
     return reply.send({ success: true });
   });
 }
