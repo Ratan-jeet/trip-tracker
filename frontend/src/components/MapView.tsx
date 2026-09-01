@@ -132,70 +132,57 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
 
   // Enable compass-based rotation (manual only via map controls)
 
-  // Destination marker + fit — only on route change
-  const lastRouteId = useRef<string | null>(null);
+  // Destination marker — only on route change
   useEffect(() => {
     if (!map.current || !mapReady) return;
-
     if (destMarker.current) {
       destMarker.current.remove();
       destMarker.current = null;
     }
-    if (map.current.getLayer('route-line')) map.current.removeLayer('route-line');
-    if (map.current.getSource('route-line')) map.current.removeSource('route-line');
-
     if (!route) {
-      lastRouteId.current = null;
+      if (map.current.getLayer('route-line')) map.current.removeLayer('route-line');
+      if (map.current.getSource('route-line')) map.current.removeSource('route-line');
       if (map.current.getLayer('member-lines')) map.current.removeLayer('member-lines');
       if (map.current.getSource('member-lines')) map.current.removeSource('member-lines');
       return;
     }
-
     const destEl = document.createElement('div');
     destEl.innerHTML = `<div style="font-size:32px;text-shadow:0 2px 4px rgba(0,0,0,0.3);">🏁</div>`;
     destMarker.current = new maplibregl.Marker({ element: destEl })
       .setLngLat([route.destinationLng, route.destinationLat])
       .setPopup(new maplibregl.Popup().setHTML(`<b>${route.destinationName}</b><br>Destination`))
       .addTo(map.current);
-
-    // Fit once per new route
-    const routeKey = `${route.destinationLat},${route.destinationLng}`;
-    if (lastRouteId.current !== routeKey) {
-      lastRouteId.current = routeKey;
-      const allPts: [number, number][] = [[route.destinationLng, route.destinationLat]];
-      locations.forEach(l => allPts.push([l.lng, l.lat]));
-      if (allPts.length === 1) {
-        map.current.easeTo({ center: [route.destinationLng, route.destinationLat], zoom: 12, duration: 800 });
-      } else {
-        const bounds = allPts.reduce(
-          (b, coord) => b.extend(coord),
-          new maplibregl.LngLatBounds(allPts[0], allPts[0])
-        );
-        map.current.fitBounds(bounds, { padding: 60, maxZoom: 14, duration: 800 });
-      }
-    }
   }, [route, mapReady]);
 
-  // Route line: road path to destination — works even before live locations arrive
+  // Route line + fit — draws immediately, updates when first location arrives
+  const routeFitted = useRef<string | null>(null);
   useEffect(() => {
     if (!map.current || !mapReady || !route) return;
+    const routeKey = `${route.destinationLat},${route.destinationLng}`;
+    const needsFit = !routeFitted.current || !routeFitted.current.startsWith(routeKey);
 
+    // clean old line
     if (map.current.getLayer('route-line')) map.current.removeLayer('route-line');
     if (map.current.getSource('route-line')) map.current.removeSource('route-line');
 
     let cancelled = false;
-    const start = locations.length > 0 ? locations[0] : { lng: map.current.getCenter().lng, lat: map.current.getCenter().lat };
-    (async () => {
+    const start = locations.length > 0 ? locations[0] : null;
+    const fetchLine = async () => {
+      // if no location yet, show straight dashed line from map center to destination so route is visible immediately
+      const s = start || { lng: map.current!.getCenter().lng, lat: map.current!.getCenter().lat };
       try {
-        const url = `https://router.project-osrm.org/route/v1/driving/${start.lng},${start.lat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`;
+        const url = `https://router.project-osrm.org/route/v1/driving/${s.lng},${s.lat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`;
         const res = await fetch(url);
         const data = await res.json();
         if (cancelled || !map.current || (map.current as any)._removed) return;
         let coords: [number, number][];
+        let dashed = false;
         if (data.code === 'Ok' && data.routes.length > 0) {
           coords = data.routes[0].geometry.coordinates as [number, number][];
+          dashed = !start; // dashed if we used map center
         } else {
-          coords = [[start.lng, start.lat], [route.destinationLng, route.destinationLat]];
+          coords = [[s.lng, s.lat], [route.destinationLng, route.destinationLat]];
+          dashed = true;
         }
         if (map.current.getSource('route-line')) return;
         map.current.addSource('route-line', {
@@ -207,11 +194,16 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
           type: 'line',
           source: 'route-line',
           layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: { 'line-color': '#1a56db', 'line-width': 6, 'line-opacity': 0.9, 'line-dasharray': data.code === 'Ok' ? undefined as any : [2, 2] },
+          paint: {
+            'line-color': '#1a56db',
+            'line-width': 6,
+            'line-opacity': 0.9,
+            ...(dashed ? { 'line-dasharray': [4, 4] } as any : {}),
+          },
         });
       } catch {
         if (cancelled || !map.current || (map.current as any)._removed) return;
-        const coords: [number, number][] = [[start.lng, start.lat], [route.destinationLng, route.destinationLat]];
+        const coords: [number, number][] = [[s.lng, s.lat], [route.destinationLng, route.destinationLat]];
         if (map.current.getSource('route-line')) return;
         map.current.addSource('route-line', {
           type: 'geojson',
@@ -225,9 +217,30 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
           paint: { 'line-color': '#1a56db', 'line-width': 4, 'line-opacity': 0.6, 'line-dasharray': [6, 6] },
         });
       }
-    })();
+    };
+    fetchLine();
+
+    if (needsFit) {
+      if (locations.length > 0) {
+        const allPts: [number, number][] = [[route.destinationLng, route.destinationLat]];
+        locations.forEach(l => allPts.push([l.lng, l.lat]));
+        const bounds = allPts.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(allPts[0], allPts[0]));
+        map.current.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 800 });
+        routeFitted.current = `${routeKey}_done`;
+      } else {
+        map.current.easeTo({ center: [route.destinationLng, route.destinationLat], zoom: 12, duration: 600 });
+        routeFitted.current = `${routeKey}_noLoc`;
+      }
+    } else if (routeFitted.current === `${routeKey}_noLoc` && locations.length > 0) {
+      const allPts: [number, number][] = [[route.destinationLng, route.destinationLat]];
+      locations.forEach(l => allPts.push([l.lng, l.lat]));
+      const bounds = allPts.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(allPts[0], allPts[0]));
+      map.current.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 800 });
+      routeFitted.current = `${routeKey}_done`;
+    }
+
     return () => { cancelled = true; };
-  }, [route, mapReady]);
+  }, [route, locations, mapReady]);
 
   // Draw member-to-destination lines via OSRM — debounced, no map movement
   const memberLinesTimer = useRef<any>(null);
