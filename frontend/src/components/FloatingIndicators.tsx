@@ -10,7 +10,7 @@ interface OffScreenMember {
   lat: number;
   lng: number;
   distance: number;
-  angle: number; // degrees from center of screen
+  angle: number;
 }
 
 interface FloatingIndicatorsProps {
@@ -23,142 +23,87 @@ interface FloatingIndicatorsProps {
 
 export default function FloatingIndicators({ mapInstance, locations, currentUserId, myDeviceId, onCenter }: FloatingIndicatorsProps) {
   const [offScreen, setOffScreen] = useState<OffScreenMember[]>([]);
-  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!mapInstance) return;
 
-    const update = () => {
-      const container = mapInstance.getContainer();
-      const rect = container.getBoundingClientRect();
-      const bounds = mapInstance.getBounds();
-      const center = mapInstance.getCenter();
-      const padding = 40; // px from edge
+    let raf: number | null = null;
+    const schedule = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = null;
+        const container = mapInstance.getContainer();
+        const rect = container.getBoundingClientRect();
+        const padding = 36;
 
-      const myLoc = locations.find(l => l.deviceId === myDeviceId);
-      if (!myLoc) {
-        setOffScreen([]);
-        return;
-      }
-
-      const result: OffScreenMember[] = [];
-
-      for (const loc of locations) {
-        if (loc.deviceId === myDeviceId) continue;
-
-        const point = mapInstance.project([loc.lng, loc.lat]);
-        const isOnScreen =
-          point.x >= padding && point.x <= rect.width - padding &&
-          point.y >= padding && point.y <= rect.height - padding;
-
-        if (!isOnScreen) {
-          const dx = point.x - rect.width / 2;
-          const dy = point.y - rect.height / 2;
-          const angle = Math.atan2(dy, dx) * (180 / Math.PI);
-          const distance = haversineDistance(myLoc.lat, myLoc.lng, loc.lat, loc.lng);
-
-          result.push({
-            deviceId: loc.deviceId,
-            name: loc.ownerName || loc.deviceName || 'Unknown',
-            lat: loc.lat,
-            lng: loc.lng,
-            distance,
-            angle,
-          });
+        const myLoc = myDeviceId ? locations.find(l => l.deviceId === myDeviceId) : locations[0];
+        if (!myLoc || locations.length <= 1) {
+          setOffScreen([]);
+          return;
         }
-      }
 
-      setOffScreen(result);
+        const result: OffScreenMember[] = [];
+        for (const loc of locations) {
+          if (myDeviceId && loc.deviceId === myDeviceId) continue;
+          const point = mapInstance.project([loc.lng, loc.lat]);
+          const onScreen = point.x >= padding && point.x <= rect.width - padding && point.y >= padding && point.y <= rect.height - padding;
+          if (!onScreen) {
+            const dx = point.x - rect.width / 2;
+            const dy = point.y - rect.height / 2;
+            const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+            const distance = haversineDistance(myLoc.lat, myLoc.lng, loc.lat, loc.lng);
+            result.push({ deviceId: loc.deviceId, name: loc.ownerName || loc.deviceName || 'Unknown', lat: loc.lat, lng: loc.lng, distance, angle });
+          }
+        }
+        setOffScreen(result);
+      });
     };
 
-    update();
-    mapInstance.on('move', update);
-    mapInstance.on('zoom', update);
-    mapInstance.on('resize', update);
-
+    schedule();
+    mapInstance.on('move', schedule);
+    mapInstance.on('zoom', schedule);
     return () => {
-      mapInstance.off('move', update);
-      mapInstance.off('zoom', update);
-      mapInstance.off('resize', update);
+      if (raf) cancelAnimationFrame(raf);
+      mapInstance.off('move', schedule);
+      mapInstance.off('zoom', schedule);
     };
-  }, [mapInstance, locations, currentUserId, myDeviceId]);
+  }, [mapInstance, locations, myDeviceId]);
 
   if (offScreen.length === 0) return null;
 
-  // Clamp each indicator to the edge of the screen
-  const getEdgePosition = (angleDeg: number) => {
-    const angleRad = angleDeg * (Math.PI / 180);
-    const w = typeof window !== 'undefined' ? window.innerWidth : 800;
-    const h = typeof window !== 'undefined' ? window.innerHeight : 600;
-    const cx = w / 2;
-    const cy = h / 2;
-    const maxR = Math.min(cx, cy) - 30;
-
-    // Intersect the ray from center with the viewport rectangle
-    const cos = Math.cos(angleRad);
-    const sin = Math.sin(angleRad);
-
-    let x = cx;
-    let y = cy;
-
-    if (Math.abs(cos) > 0.001) {
-      const tRight = (w - 30 - cx) / cos;
-      const tLeft = (30 - cx) / cos;
-      const t = cos > 0 ? tRight : tLeft;
-      if (Math.abs(t) < maxR * 3) {
-        x = cx + t * cos;
-        y = cy + t * sin;
-      }
-    }
-
-    if (y < 30 || y > h - 30) {
-      const t = sin > 0 ? (h - 30 - cy) / sin : (30 - cy) / sin;
-      x = cx + t * cos;
-      y = cy + t * sin;
-    }
-
-    x = Math.max(20, Math.min(w - 20, x));
-    y = Math.max(20, Math.min(h - 20, y));
-
-    return { x, y };
-  };
-
-  // Deduplicate by name (show closest indicator per person)
   const unique = new Map<string, OffScreenMember>();
   for (const m of offScreen) {
-    const existing = unique.get(m.name);
-    if (!existing || m.distance < existing.distance) {
-      unique.set(m.name, m);
-    }
+    const ex = unique.get(m.name);
+    if (!ex || m.distance < ex.distance) unique.set(m.name, m);
   }
 
-  return (
-    <div ref={containerRef} className="absolute inset-0 pointer-events-none" style={{ zIndex: 999 }}>
-      {Array.from(unique.values()).map((m) => {
-        const pos = getEdgePosition(m.angle);
-        const arrowAngle = m.angle + 180; // arrow points inward
+  const getEdgePosition = (angleDeg: number, rect: DOMRect) => {
+    const rad = angleDeg * (Math.PI / 180);
+    const cx = rect.width / 2;
+    const cy = rect.height / 2;
+    const pad = 44;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    // intersect with rect
+    let t = Infinity;
+    if (Math.abs(cos) > 0.001) t = Math.min(t, cos > 0 ? (rect.width - pad - cx) / cos : (pad - cx) / cos);
+    if (Math.abs(sin) > 0.001) t = Math.min(t, sin > 0 ? (rect.height - pad - cy) / sin : (pad - cy) / sin);
+    if (!isFinite(t) || t <= 0) t = Math.min(rect.width, rect.height) / 2 - pad;
+    return { x: cx + cos * t, y: cy + sin * t };
+  };
 
+  // need rect for positioning — read from map container
+  const rect = mapInstance ? mapInstance.getContainer().getBoundingClientRect() : null;
+
+  return (
+    <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 999 }}>
+      {Array.from(unique.values()).map((m) => {
+        const pos = rect ? getEdgePosition(m.angle, rect) : { x: 0, y: 0 };
         return (
-          <div
-            key={m.deviceId}
-            className="absolute pointer-events-auto cursor-pointer"
-            style={{
-              left: pos.x,
-              top: pos.y,
-              transform: 'translate(-50%, -50%)',
-            }}
-            onClick={() => onCenter(m.lat, m.lng)}
-          >
-            <div className="bg-white/95 backdrop-blur-sm rounded-full shadow-lg border border-gray-200 px-2.5 py-1 flex items-center gap-1.5 hover:bg-blue-50 transition-colors">
-              <svg
-                className="w-3.5 h-3.5 text-blue-600 shrink-0"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2.5}
-                style={{ transform: `rotate(${arrowAngle}deg)` }}
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M12 5l7 7-7 7" />
+          <div key={m.deviceId} className="absolute pointer-events-auto cursor-pointer" style={{ left: pos.x, top: pos.y, transform: 'translate(-50%, -50%)' }} onClick={() => onCenter(m.lat, m.lng)}>
+            <div className="bg-white/95 backdrop-blur-sm rounded-full shadow-lg border border-gray-200 px-2.5 py-1 flex items-center gap-1.5 hover:bg-blue-50">
+              <svg className="w-3.5 h-3.5 text-blue-600 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} style={{ transform: `rotate(${m.angle}deg)` }}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 5l7 7-7 7M5 12h14" />
               </svg>
               <span className="text-[11px] font-semibold text-gray-800 whitespace-nowrap">{m.name}</span>
               <span className="text-[10px] text-blue-600 font-medium whitespace-nowrap">{formatDistance(m.distance)}</span>
