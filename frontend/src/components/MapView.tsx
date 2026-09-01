@@ -1,18 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
-
-const DEVICE_COLORS: Record<string, string> = {
-  phone: '#3b82f6',
-  vehicle: '#ef4444',
-};
-
-const DEVICE_ICONS: Record<string, string> = {
-  phone: '📱',
-  vehicle: '🚗',
-};
+import * as maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 
 function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371;
@@ -31,21 +21,23 @@ function formatDistance(km: number): string {
 }
 
 function formatTime(hours: number): string {
-  if (hours < 1/60) return 'Arrived';
+  if (hours < 1 / 60) return 'Arrived';
   if (hours < 1) return `${Math.round(hours * 60)} min`;
   const h = Math.floor(hours);
   const m = Math.round((hours - h) * 60);
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
-function createMarkerIcon(deviceType: string, isStale: boolean, batteryLevel?: number, ownerName?: string, speed?: number, heading?: number) {
-  const color = isStale ? '#6b7280' : (DEVICE_COLORS[deviceType] || '#6b7280');
-  const emoji = DEVICE_ICONS[deviceType] || '📍';
+function createMarkerHtml(deviceType: string, isStale: boolean, batteryLevel?: number, ownerName?: string, speed?: number, heading?: number) {
+  const colors: Record<string, string> = { phone: '#3b82f6', vehicle: '#ef4444' };
+  const emojis: Record<string, string> = { phone: '📱', vehicle: '🚗' };
+  const color = isStale ? '#6b7280' : (colors[deviceType] || '#6b7280');
+  const emoji = emojis[deviceType] || '📍';
   const label = ownerName || 'Unknown';
   const speedText = speed ? `${(speed * 3.6).toFixed(0)} km/h` : '';
   const rotation = heading != null ? `transform: rotate(${heading}deg);` : '';
 
-  const html = `
+  return `
     <div style="position:relative;display:flex;flex-direction:column;align-items:center;">
       <div style="position:relative;width:40px;height:40px;">
         <div style="position:absolute;inset:-4px;border-radius:50%;background:${color};opacity:0.3;animation:pulse-ring 1.5s infinite;"></div>
@@ -64,13 +56,6 @@ function createMarkerIcon(deviceType: string, isStale: boolean, batteryLevel?: n
       ${speedText ? `<div style="font-size:8px;color:#6b7280;white-space:nowrap;">${speedText}</div>` : ''}
     </div>
   `;
-
-  return L.divIcon({
-    html,
-    className: '',
-    iconSize: [40, 56],
-    iconAnchor: [20, 48],
-  });
 }
 
 interface MapViewProps {
@@ -87,34 +72,55 @@ interface MapViewProps {
 
 export default function MapView({ locations, followDeviceId, route, centerOn }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
-  const map = useRef<L.Map | null>(null);
-  const markers = useRef<Map<string, L.Marker>>(new Map());
-  const routeLine = useRef<L.Polyline | null>(null);
-  const memberLines = useRef<L.Polyline[]>([]);
-  const destinationMarker = useRef<L.Marker | null>(null);
+  const map = useRef<maplibregl.Map | null>(null);
+  const markers = useRef<Map<string, maplibregl.Marker>>(new Map());
+  const routeSource = useRef<string>('route-line');
+  const memberLinesSource = useRef<string>('member-lines');
+  const destMarker = useRef<maplibregl.Marker | null>(null);
   const initialized = useRef(false);
   const hasFitted = useRef(false);
   const [mapReady, setMapReady] = useState(false);
+  const [bearing, setBearing] = useState(0);
 
+  // Initialize map
   useEffect(() => {
     if (!mapContainer.current || initialized.current) return;
     initialized.current = true;
 
-    map.current = L.map(mapContainer.current, {
-      center: [22.5937, 78.9629],
+    map.current = new maplibregl.Map({
+      container: mapContainer.current,
+      style: {
+        version: 8,
+        sources: {
+          osm: {
+            type: 'raster',
+            tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+            tileSize: 256,
+            attribution: '© OpenStreetMap contributors',
+          },
+        },
+        layers: [
+          {
+            id: 'osm',
+            type: 'raster',
+            source: 'osm',
+            minzoom: 0,
+            maxzoom: 19,
+          },
+        ],
+      },
+      center: [78.9629, 22.5937],
       zoom: 5,
-      zoomControl: true,
+      bearing: 0,
+      pitch: 0,
+      maxPitch: 60,
     });
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-      maxZoom: 19,
-    }).addTo(map.current);
+    map.current.addControl(new maplibregl.NavigationControl({ showCompass: true, showZoom: true }), 'top-right');
 
-    setTimeout(() => {
-      map.current?.invalidateSize();
+    map.current.on('load', () => {
       setMapReady(true);
-    }, 100);
+    });
 
     return () => {
       map.current?.remove();
@@ -123,106 +129,168 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
     };
   }, []);
 
-  // Draw route
+  // Enable compass-based rotation
   useEffect(() => {
     if (!map.current) return;
+    const handleRotate = () => {
+      if (map.current) setBearing(map.current.getBearing());
+    };
+    map.current.on('rotate', handleRotate);
+    return () => { map.current?.off('rotate', handleRotate); };
+  }, [mapReady]);
 
-    if (routeLine.current) {
-      map.current.removeLayer(routeLine.current);
-      routeLine.current = null;
+  // Device heading → rotate map
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.DeviceOrientationEvent) return;
+
+    const handler = (e: DeviceOrientationEvent) => {
+      let heading = e.alpha;
+      if (heading === null || heading === undefined) return;
+      // iOS: webkitCompassHeading is compass heading (0=N, clockwise)
+      if ((e as any).webkitCompassHeading !== undefined) {
+        heading = (e as any).webkitCompassHeading;
+      } else {
+        heading = 360 - heading; // Convert alpha to compass heading
+      }
+      if (map.current && heading != null && !map.current.isRotating()) {
+        map.current.setBearing(-heading);
+      }
+    };
+
+    // Request permission on iOS 13+
+    if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+      (DeviceOrientationEvent as any).requestPermission().then((state: string) => {
+        if (state === 'granted') {
+          window.addEventListener('deviceorientationabsolute', handler, true);
+          window.addEventListener('deviceorientation', handler, true);
+        }
+      });
+    } else {
+      window.addEventListener('deviceorientationabsolute', handler, true);
+      window.addEventListener('deviceorientation', handler, true);
     }
-    if (destinationMarker.current) {
-      map.current.removeLayer(destinationMarker.current);
-      destinationMarker.current = null;
+
+    return () => {
+      window.removeEventListener('deviceorientationabsolute', handler, true);
+      window.removeEventListener('deviceorientation', handler, true);
+    };
+  }, [mapReady]);
+
+  // Draw route
+  useEffect(() => {
+    if (!map.current || !mapReady) return;
+
+    if (destMarker.current) {
+      destMarker.current.remove();
+      destMarker.current = null;
     }
-    memberLines.current.forEach(l => map.current?.removeLayer(l));
-    memberLines.current = [];
+
+    if (map.current.getLayer('route-line')) map.current.removeLayer('route-line');
+    if (map.current.getSource('route-line')) map.current.removeSource('route-line');
+    if (map.current.getLayer('member-lines')) map.current.removeLayer('member-lines');
+    if (map.current.getSource('member-lines')) map.current.removeSource('member-lines');
 
     if (!route) return;
 
-    const destIcon = L.divIcon({
-      html: `<div style="font-size:28px;text-shadow:0 2px 4px rgba(0,0,0,0.3);">🏁</div>`,
-      className: '',
-      iconSize: [28, 28],
-      iconAnchor: [14, 14],
-    });
+    // Destination marker
+    const destEl = document.createElement('div');
+    destEl.innerHTML = `<div style="font-size:32px;text-shadow:0 2px 4px rgba(0,0,0,0.3);">🏁</div>`;
+    destMarker.current = new maplibregl.Marker({ element: destEl })
+      .setLngLat([route.destinationLng, route.destinationLat])
+      .setPopup(new maplibregl.Popup().setHTML(`<b>${route.destinationName}</b><br>Destination`))
+      .addTo(map.current);
 
-    destinationMarker.current = L.marker([route.destinationLat, route.destinationLng], { icon: destIcon })
-      .addTo(map.current)
-      .bindPopup(`<div style="font-weight:bold;">${route.destinationName}</div>Destination`);
-
-    const routePoints: L.LatLngExpression[] = [];
+    // Route line (waypoints to destination)
     if (route.waypoints && route.waypoints.length > 0) {
-      route.waypoints.forEach(wp => routePoints.push([wp.lat, wp.lng]));
+      const coords = [...route.waypoints.map(wp => [wp.lng, wp.lat] as [number, number]), [route.destinationLng, route.destinationLat]];
+      map.current.addSource('route-line', {
+        type: 'geojson',
+        data: { type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} },
+      });
+      map.current.addLayer({
+        id: 'route-line',
+        type: 'line',
+        source: 'route-line',
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: { 'line-color': '#1a56db', 'line-width': 6, 'line-opacity': 0.9 },
+      });
     }
-    routePoints.push([route.destinationLat, route.destinationLng]);
 
-    if (routePoints.length > 1) {
-      routeLine.current = L.polyline(routePoints, {
-        color: '#1a56db',
-        weight: 6,
-        opacity: 0.9,
-      }).addTo(map.current);
-    }
-
+    // Fit bounds
     if (!hasFitted.current) {
-      const allPts: L.LatLngExpression[] = [...routePoints];
-      locations.forEach(l => allPts.push([l.lat, l.lng]));
-      if (allPts.length > 0) {
-        const bounds = L.latLngBounds(allPts);
-        map.current.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+      const allPts: [number, number][] = [[route.destinationLng, route.destinationLat]];
+      locations.forEach(l => allPts.push([l.lng, l.lat]));
+      if (route.waypoints) route.waypoints.forEach(wp => allPts.push([wp.lng, wp.lat]));
+      if (allPts.length > 1) {
+        const bounds = allPts.reduce(
+          (b, coord) => b.extend(coord),
+          new maplibregl.LngLatBounds(allPts[0], allPts[0])
+        );
+        map.current.fitBounds(bounds, { padding: 50, maxZoom: 15 });
       }
       hasFitted.current = true;
     }
   }, [route, mapReady]);
 
-  // Draw lines from each member to destination using OSRM road routes
+  // Draw member-to-destination lines via OSRM
   useEffect(() => {
-    if (!map.current || !route) return;
+    if (!map.current || !mapReady || !route) return;
 
-    memberLines.current.forEach(l => map.current?.removeLayer(l));
-    memberLines.current = [];
+    if (map.current.getLayer('member-lines')) map.current.removeLayer('member-lines');
+    if (map.current.getSource('member-lines')) map.current.removeSource('member-lines');
 
-    locations.forEach(async (loc) => {
-      try {
-        const url = `https://router.project-osrm.org/route/v1/driving/${loc.lng},${loc.lat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`;
-        const res = await fetch(url);
-        const data = await res.json();
-        if (data.code === 'Ok' && data.routes.length > 0) {
-          const coords = data.routes[0].geometry.coordinates.map((c: number[]) => [c[1], c[0]] as L.LatLngExpression);
-          const line = L.polyline(coords, {
-            color: '#1a56db',
-            weight: 5,
-            opacity: 0.8,
-          }).addTo(map.current!);
-          memberLines.current.push(line);
+    const allCoords: [number, number][] = [];
 
-          line.bindTooltip(`${loc.ownerName || 'Member'}: ${(data.routes[0].distance / 1000).toFixed(1)} km, ${formatTime(data.routes[0].duration / 3600)}`, {
-            sticky: true,
-            className: 'bg-white text-xs px-2 py-1 shadow rounded',
-          });
+    const fetchLines = async () => {
+      for (const loc of locations) {
+        try {
+          const url = `https://router.project-osrm.org/route/v1/driving/${loc.lng},${loc.lat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`;
+          const res = await fetch(url);
+          const data = await res.json();
+          if (data.code === 'Ok' && data.routes.length > 0) {
+            const coords = data.routes[0].geometry.coordinates as [number, number][];
+            allCoords.push(...coords);
+            allCoords.push([NaN, NaN]); // separator
+          }
+        } catch {
+          allCoords.push([loc.lng, loc.lat], [route.destinationLng, route.destinationLat], [NaN, NaN]);
         }
-      } catch {
-        const line = L.polyline(
-          [[loc.lat, loc.lng], [route.destinationLat, route.destinationLng]],
-          { color: '#60a5fa', weight: 3, opacity: 0.6 }
-        ).addTo(map.current!);
-        memberLines.current.push(line);
       }
-    });
-  }, [locations, route]);
 
-  // Center on specific location
+      if (allCoords.length > 0 && map.current && !(map.current as any)._removed) {
+        const filtered = allCoords.filter(c => !isNaN(c[0]));
+        map.current.addSource('member-lines', {
+          type: 'geojson',
+          data: {
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates: filtered },
+            properties: {},
+          },
+        });
+        map.current.addLayer({
+          id: 'member-lines',
+          type: 'line',
+          source: 'member-lines',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: { 'line-color': '#60a5fa', 'line-width': 3, 'line-opacity': 0.7 },
+        });
+      }
+    };
+
+    fetchLines();
+  }, [locations, route, mapReady]);
+
+  // Center on location
   useEffect(() => {
     if (!map.current || !centerOn) return;
-    map.current.setView([centerOn.lat, centerOn.lng], 16, { animate: true });
+    map.current.easeTo({ center: [centerOn.lng, centerOn.lat], zoom: 16, duration: 1000 });
   }, [centerOn]);
 
   // Update markers
   useEffect(() => {
-    if (!map.current) return;
+    if (!map.current || !mapReady) return;
 
-    // Calculate overlapping offsets — group ALL nearby markers
+    // Cluster nearby markers
     const clusters: { lat: number; lng: number; members: number[] }[] = [];
     locations.forEach((loc, i) => {
       const cluster = clusters.find(c =>
@@ -238,42 +306,43 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
     const offsets = new Map<number, number>();
     clusters.forEach(cluster => {
       if (cluster.members.length > 1) {
-        cluster.members.forEach((idx, i) => {
-          offsets.set(idx, i * 30);
-        });
+        cluster.members.forEach((idx, i) => offsets.set(idx, i * 30));
       }
     });
 
     locations.forEach((loc, idx) => {
-      const { deviceId, lat, lng, deviceType, deviceName, speed, accuracy, timestamp, batteryLevel, ownerName, isStale, heading } = loc;
+      const { deviceId, lat, lng, deviceType, ownerName, speed, batteryLevel, isStale, heading, accuracy, timestamp, deviceName } = loc;
       const offsetPx = offsets.get(idx) || 0;
       const offsetLat = lat + (offsetPx * 0.00001);
 
-      if (!markers.current.has(deviceId)) {
-        const icon = createMarkerIcon(deviceType, isStale, batteryLevel, ownerName, speed, heading);
-        const marker = L.marker([offsetLat, lng], { icon }).addTo(map.current!);
-
-        const popupContent = `
-          <div style="min-width:160px;font-family:system-ui,sans-serif;">
-            <div style="font-weight:bold;font-size:14px;margin-bottom:4px;">${ownerName || deviceName}</div>
-            <div style="font-size:12px;">
-              ${speed ? `<div>Speed: ${(speed * 3.6).toFixed(1)} km/h</div>` : ''}
-              ${accuracy ? `<div>Accuracy: ${accuracy.toFixed(0)}m</div>` : ''}
-              <div style="color:#999;">${new Date(timestamp).toLocaleTimeString()}</div>
-            </div>
+      const popupHtml = `
+        <div style="min-width:140px;font-family:system-ui,sans-serif;">
+          <div style="font-weight:bold;font-size:13px;margin-bottom:4px;">${ownerName || deviceName}</div>
+          <div style="font-size:11px;">
+            ${speed ? `<div>Speed: ${(speed * 3.6).toFixed(1)} km/h</div>` : ''}
+            ${accuracy ? `<div>Accuracy: ${accuracy.toFixed(0)}m</div>` : ''}
+            <div style="color:#999;">${new Date(timestamp).toLocaleTimeString()}</div>
           </div>
-        `;
+        </div>
+      `;
 
-        marker.bindPopup(popupContent);
+      if (!markers.current.has(deviceId)) {
+        const el = document.createElement('div');
+        el.innerHTML = createMarkerHtml(deviceType, isStale, batteryLevel, ownerName, speed, heading);
+        const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+          .setLngLat([lng, offsetLat])
+          .setPopup(new maplibregl.Popup().setHTML(popupHtml))
+          .addTo(map.current!);
         markers.current.set(deviceId, marker);
       } else {
         const marker = markers.current.get(deviceId)!;
-        marker.setLatLng([offsetLat, lng]);
-        const icon = createMarkerIcon(deviceType, isStale, batteryLevel, ownerName, speed, heading);
-        marker.setIcon(icon);
+        marker.setLngLat([lng, offsetLat]);
+        const el = marker.getElement();
+        el.innerHTML = createMarkerHtml(deviceType, isStale, batteryLevel, ownerName, speed, heading);
       }
     });
 
+    // Remove stale markers
     markers.current.forEach((marker, id) => {
       if (!locations.find((l: any) => l.deviceId === id)) {
         marker.remove();
@@ -281,23 +350,21 @@ export default function MapView({ locations, followDeviceId, route, centerOn }: 
       }
     });
 
+    // Follow device
     if (followDeviceId) {
       const followLoc = locations.find((l: any) => l.deviceId === followDeviceId);
-      if (followLoc) {
-        map.current!.setView([followLoc.lat, followLoc.lng], 16, { animate: true });
+      if (followLoc && map.current) {
+        map.current.easeTo({ center: [followLoc.lng, followLoc.lat], zoom: 16, duration: 1000 });
       }
     } else if (locations.length > 0 && !hasFitted.current) {
       hasFitted.current = true;
-      const bounds = L.latLngBounds(locations.map((l: any) => [l.lat, l.lng] as [number, number]));
-      map.current!.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+      const bounds = locations.reduce(
+        (b, l) => b.extend([l.lng, l.lat]),
+        new maplibregl.LngLatBounds([locations[0].lng, locations[0].lat], [locations[0].lng, locations[0].lat])
+      );
+      map.current?.fitBounds(bounds, { padding: 50, maxZoom: 15 });
     }
-  }, [locations, followDeviceId]);
-
-  useEffect(() => {
-    const handleResize = () => map.current?.invalidateSize();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
+  }, [locations, followDeviceId, mapReady]);
 
   return <div ref={mapContainer} className="w-full h-full" />;
 }
