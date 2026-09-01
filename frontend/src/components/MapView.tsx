@@ -75,8 +75,6 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const markers = useRef<Map<string, maplibregl.Marker>>(new Map());
-  const routeSource = useRef<string>('route-line');
-  const memberLinesSource = useRef<string>('member-lines');
   const destMarker = useRef<maplibregl.Marker | null>(null);
   const initialized = useRef(false);
   const locationsFitted = useRef(false);
@@ -132,160 +130,159 @@ export default function MapView({ locations, followDeviceId, route, centerOn, on
 
   // Enable compass-based rotation (manual only via map controls)
 
-  // Destination marker — only on route change
+  // Destination marker + route line — runs only when route changes or map first loads
+  const routeLineReady = useRef(false);
   useEffect(() => {
     if (!map.current || !mapReady) return;
-    if (destMarker.current) {
-      destMarker.current.remove();
-      destMarker.current = null;
-    }
-    if (!route) {
-      if (map.current.getLayer('route-line')) map.current.removeLayer('route-line');
-      if (map.current.getSource('route-line')) map.current.removeSource('route-line');
-      if (map.current.getLayer('member-lines')) map.current.removeLayer('member-lines');
-      if (map.current.getSource('member-lines')) map.current.removeSource('member-lines');
-      return;
-    }
+
+    // Clean old
+    if (destMarker.current) { destMarker.current.remove(); destMarker.current = null; }
+    if (map.current.getLayer('route-line')) map.current.removeLayer('route-line');
+    if (map.current.getSource('route-line')) map.current.removeSource('route-line');
+    if (map.current.getLayer('member-lines')) map.current.removeLayer('member-lines');
+    if (map.current.getSource('member-lines')) map.current.removeSource('member-lines');
+    routeLineReady.current = false;
+
+    if (!route) return;
+
+    // 1) Destination marker
     const destEl = document.createElement('div');
     destEl.innerHTML = `<div style="font-size:32px;text-shadow:0 2px 4px rgba(0,0,0,0.3);">🏁</div>`;
     destMarker.current = new maplibregl.Marker({ element: destEl })
       .setLngLat([route.destinationLng, route.destinationLat])
       .setPopup(new maplibregl.Popup().setHTML(`<b>${route.destinationName}</b><br>Destination`))
       .addTo(map.current);
-  }, [route, mapReady]);
 
-  // Route line + fit — draws immediately, updates when first location arrives
-  const routeFitted = useRef<string | null>(null);
-  useEffect(() => {
-    if (!map.current || !mapReady || !route) return;
-    const routeKey = `${route.destinationLat},${route.destinationLng}`;
-    const needsFit = !routeFitted.current || !routeFitted.current.startsWith(routeKey);
+    // 2) Route line — straight dashed line immediately, then replace with OSRM road path
+    const sLng = locations.length > 0 ? locations[0].lng : map.current.getCenter().lng;
+    const sLat = locations.length > 0 ? locations[0].lat : map.current.getCenter().lat;
+    const fallbackCoords: [number, number][] = [[sLng, sLat], [route.destinationLng, route.destinationLat]];
+    map.current.addSource('route-line', {
+      type: 'geojson',
+      data: { type: 'Feature', geometry: { type: 'LineString', coordinates: fallbackCoords }, properties: {} },
+    });
+    map.current.addLayer({
+      id: 'route-line', type: 'line', source: 'route-line',
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': '#1a56db', 'line-width': 6, 'line-opacity': 0.9, 'line-dasharray': [4, 4] },
+    });
 
-    // clean old line
-    if (map.current.getLayer('route-line')) map.current.removeLayer('route-line');
-    if (map.current.getSource('route-line')) map.current.removeSource('route-line');
-
-    let cancelled = false;
-    const start = locations.length > 0 ? locations[0] : null;
-    const fetchLine = async () => {
-      // if no location yet, show straight dashed line from map center to destination so route is visible immediately
-      const s = start || { lng: map.current!.getCenter().lng, lat: map.current!.getCenter().lat };
-      try {
-        const url = `https://router.project-osrm.org/route/v1/driving/${s.lng},${s.lat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`;
-        const res = await fetch(url);
-        const data = await res.json();
-        if (cancelled || !map.current || (map.current as any)._removed) return;
-        let coords: [number, number][];
-        let dashed = false;
+    // 3) Replace with OSRM road path
+    fetch(`https://router.project-osrm.org/route/v1/driving/${sLng},${sLat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`)
+      .then(r => r.json())
+      .then(data => {
+        if (!map.current || (map.current as any)._removed) return;
+        const src = map.current.getSource('route-line') as maplibregl.GeoJSONSource | undefined;
+        if (!src) return;
         if (data.code === 'Ok' && data.routes.length > 0) {
-          coords = data.routes[0].geometry.coordinates as [number, number][];
-          dashed = !start; // dashed if we used map center
-        } else {
-          coords = [[s.lng, s.lat], [route.destinationLng, route.destinationLat]];
-          dashed = true;
+          src.setData({
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates: data.routes[0].geometry.coordinates as [number, number][] },
+            properties: {},
+          });
         }
-        if (map.current.getSource('route-line')) return;
-        map.current.addSource('route-line', {
-          type: 'geojson',
-          data: { type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} },
-        });
-        map.current.addLayer({
-          id: 'route-line',
-          type: 'line',
-          source: 'route-line',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: {
-            'line-color': '#1a56db',
-            'line-width': 6,
-            'line-opacity': 0.9,
-            ...(dashed ? { 'line-dasharray': [4, 4] } as any : {}),
-          },
-        });
-      } catch {
-        if (cancelled || !map.current || (map.current as any)._removed) return;
-        const coords: [number, number][] = [[s.lng, s.lat], [route.destinationLng, route.destinationLat]];
-        if (map.current.getSource('route-line')) return;
-        map.current.addSource('route-line', {
-          type: 'geojson',
-          data: { type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} },
-        });
-        map.current.addLayer({
-          id: 'route-line',
-          type: 'line',
-          source: 'route-line',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: { 'line-color': '#1a56db', 'line-width': 4, 'line-opacity': 0.6, 'line-dasharray': [6, 6] },
-        });
-      }
-    };
-    fetchLine();
+        // Remove dasharray for solid line — remove and re-add layer without dash
+        if (map.current.getLayer('route-line')) {
+          const src = map.current.getSource('route-line') as maplibregl.GeoJSONSource | undefined;
+          const data = src?.serialize();
+          map.current.removeLayer('route-line');
+          map.current.removeSource('route-line');
+          if (data) {
+            map.current.addSource('route-line', data as any);
+            map.current.addLayer({
+              id: 'route-line', type: 'line', source: 'route-line',
+              layout: { 'line-join': 'round', 'line-cap': 'round' },
+              paint: { 'line-color': '#1a56db', 'line-width': 6, 'line-opacity': 0.9 },
+            });
+          }
+        }
+      })
+      .catch(() => {});
 
-    if (needsFit) {
-      if (locations.length > 0) {
-        const allPts: [number, number][] = [[route.destinationLng, route.destinationLat]];
-        locations.forEach(l => allPts.push([l.lng, l.lat]));
-        const bounds = allPts.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(allPts[0], allPts[0]));
-        map.current.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 800 });
-        routeFitted.current = `${routeKey}_done`;
-      } else {
-        map.current.easeTo({ center: [route.destinationLng, route.destinationLat], zoom: 12, duration: 600 });
-        routeFitted.current = `${routeKey}_noLoc`;
-      }
-    } else if (routeFitted.current === `${routeKey}_noLoc` && locations.length > 0) {
+    routeLineReady.current = true;
+    refitOnFirstLoc.current = locations.length === 0;
+
+    // 4) Fit map to show both location + destination
+    if (locations.length > 0) {
       const allPts: [number, number][] = [[route.destinationLng, route.destinationLat]];
       locations.forEach(l => allPts.push([l.lng, l.lat]));
       const bounds = allPts.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(allPts[0], allPts[0]));
       map.current.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 800 });
-      routeFitted.current = `${routeKey}_done`;
+    } else {
+      map.current.easeTo({ center: [route.destinationLng, route.destinationLat], zoom: 12, duration: 600 });
     }
+  }, [route, mapReady]); // ← only depends on route + mapReady, NOT locations
 
-    return () => { cancelled = true; };
-  }, [route, locations, mapReady]);
+  // Refit when first location arrives after route was set without locations
+  const refitOnFirstLoc = useRef(false);
+  useEffect(() => {
+    if (!map.current || !route || locations.length === 0) return;
+    if (refitOnFirstLoc.current) return;
+    refitOnFirstLoc.current = true;
+    const allPts: [number, number][] = [[route.destinationLng, route.destinationLat]];
+    locations.forEach(l => allPts.push([l.lng, l.lat]));
+    const bounds = allPts.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(allPts[0], allPts[0]));
+    map.current.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 800 });
 
-  // Draw member-to-destination lines via OSRM — debounced, no map movement
+    // Also update route line start point to actual location (not map center)
+    if (map.current.getSource('route-line')) {
+      const s = locations[0];
+      fetch(`https://router.project-osrm.org/route/v1/driving/${s.lng},${s.lat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`)
+        .then(r => r.json())
+        .then(data => {
+          const src = map.current?.getSource('route-line') as maplibregl.GeoJSONSource | undefined;
+          if (src && data.code === 'Ok' && data.routes.length > 0) {
+            // Remove old layer, add solid version
+            if (map.current?.getLayer('route-line')) map.current.removeLayer('route-line');
+            if (map.current?.getSource('route-line')) map.current.removeSource('route-line');
+            map.current?.addSource('route-line', {
+              type: 'geojson',
+              data: { type: 'Feature', geometry: { type: 'LineString', coordinates: data.routes[0].geometry.coordinates as [number, number][] }, properties: {} },
+            });
+            map.current?.addLayer({
+              id: 'route-line', type: 'line', source: 'route-line',
+              layout: { 'line-join': 'round', 'line-cap': 'round' },
+              paint: { 'line-color': '#1a56db', 'line-width': 6, 'line-opacity': 0.9 },
+            });
+          }
+        })
+        .catch(() => {});
+    }
+  }, [locations, route]);
+
+  // Member-to-destination lines — drawn after route line, debounced
   const memberLinesTimer = useRef<any>(null);
   useEffect(() => {
-    if (!map.current || !mapReady || !route) return;
+    if (!map.current || !mapReady || !route || locations.length === 0) return;
     if (memberLinesTimer.current) clearTimeout(memberLinesTimer.current);
     memberLinesTimer.current = setTimeout(async () => {
-      if (!map.current || (map.current as any)._removed) return;
+      if (!map.current || (map.current as any)._removed || map.current.getSource('member-lines')) return;
       const allCoords: [number, number][] = [];
       for (const loc of locations) {
         try {
-          const url = `https://router.project-osrm.org/route/v1/driving/${loc.lng},${loc.lat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`;
-          const res = await fetch(url);
+          const res = await fetch(`https://router.project-osrm.org/route/v1/driving/${loc.lng},${loc.lat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`);
           const data = await res.json();
           if (data.code === 'Ok' && data.routes.length > 0) {
-            const coords = data.routes[0].geometry.coordinates as [number, number][];
-            allCoords.push(...coords);
+            allCoords.push(...(data.routes[0].geometry.coordinates as [number, number][]));
             allCoords.push([NaN, NaN]);
           }
         } catch {
           allCoords.push([loc.lng, loc.lat], [route.destinationLng, route.destinationLat], [NaN, NaN]);
         }
       }
-      if (!map.current || (map.current as any)._removed) return;
+      if (!map.current || (map.current as any)._removed || map.current.getSource('member-lines')) return;
       const filtered = allCoords.filter(c => !isNaN(c[0]));
-      const existing = map.current.getSource('member-lines') as maplibregl.GeoJSONSource | undefined;
-      if (filtered.length === 0) {
-        if (map.current.getLayer('member-lines')) map.current.removeLayer('member-lines');
-        if (map.current.getSource('member-lines')) map.current.removeSource('member-lines');
-        return;
-      }
-      const geojson: any = { type: 'Feature', geometry: { type: 'LineString', coordinates: filtered }, properties: {} };
-      if (existing) {
-        (existing as any).setData(geojson);
-      } else {
-        map.current.addSource('member-lines', { type: 'geojson', data: geojson });
-        map.current.addLayer({
-          id: 'member-lines',
-          type: 'line',
-          source: 'member-lines',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: { 'line-color': '#60a5fa', 'line-width': 3, 'line-opacity': 0.7 },
-        });
-      }
-    }, 1500);
+      if (filtered.length === 0) return;
+      map.current.addSource('member-lines', {
+        type: 'geojson',
+        data: { type: 'Feature', geometry: { type: 'LineString', coordinates: filtered }, properties: {} },
+      });
+      map.current.addLayer({
+        id: 'member-lines', type: 'line', source: 'member-lines',
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: { 'line-color': '#60a5fa', 'line-width': 3, 'line-opacity': 0.7 },
+      });
+    }, 2000);
     return () => { if (memberLinesTimer.current) clearTimeout(memberLinesTimer.current); };
   }, [locations, route, mapReady]);
 
