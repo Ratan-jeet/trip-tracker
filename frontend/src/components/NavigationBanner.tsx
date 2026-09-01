@@ -19,6 +19,8 @@ interface NavigationBannerProps {
   totalDistance: number;
   totalDuration: number;
   destinationName: string;
+  destinationLat: number;
+  destinationLng: number;
   visible: boolean;
 }
 
@@ -43,7 +45,6 @@ function getManeuverIcon(type: string, modifier?: string): string {
     if (modifier === 'left') return '↰';
     return '⤴️';
   }
-  // turns
   if (modifier === 'left' || modifier === 'slight left' || modifier === 'sharp left') return '↰';
   if (modifier === 'right' || modifier === 'slight right' || modifier === 'sharp right') return '↱';
   if (modifier === 'uturn') return '↩️';
@@ -79,50 +80,76 @@ function formatDur(seconds: number): string {
   return `${Math.round(seconds / 60)} min`;
 }
 
-export default function NavigationBanner({ steps, userLat, userLng, totalDistance, totalDuration, destinationName, visible }: NavigationBannerProps) {
+export default function NavigationBanner({
+  steps, userLat, userLng, totalDistance, totalDuration,
+  destinationName, destinationLat, destinationLng, visible
+}: NavigationBannerProps) {
   const [currentStepIdx, setCurrentStepIdx] = useState(0);
   const [distToStep, setDistToStep] = useState(0);
+  const [remainingDist, setRemainingDist] = useState(totalDistance);
+  const lastAdvanceTime = useRef(Date.now());
   const prevStepIdx = useRef(0);
 
-  // Find which step the user is closest to
+  // Calculate actual remaining distance to destination
+  useEffect(() => {
+    if (!visible) return;
+    const dist = haversineDistance(userLat, userLng, destinationLat, destinationLng) * 1000; // convert to meters
+    setRemainingDist(dist);
+  }, [userLat, userLng, destinationLat, destinationLng, visible]);
+
+  // Find which step user is on — based on proximity to step path
   useEffect(() => {
     if (!steps || steps.length === 0 || !visible) return;
 
-    let bestIdx = 0;
-    let bestDist = Infinity;
+    let bestStepIdx = 0;
+    let bestDistToPath = Infinity;
 
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
-      // Check distance to the start of this step
-      if (step.coordinates && step.coordinates.length > 0) {
-        const startCoord = step.coordinates[0];
-        const d = haversineDistance(userLat, userLng, startCoord[1], startCoord[0]);
-        if (d < bestDist) {
-          bestDist = d;
-          bestIdx = i;
-        }
-        // Also check end of step
-        const endCoord = step.coordinates[step.coordinates.length - 1];
-        const dEnd = haversineDistance(userLat, userLng, endCoord[1], endCoord[0]);
-        if (dEnd < bestDist) {
-          bestDist = dEnd;
-          bestIdx = Math.min(i + 1, steps.length - 1);
-        }
+      if (!step.coordinates || step.coordinates.length === 0) continue;
+
+      // Find closest point on this step's path
+      let minDist = Infinity;
+      for (const coord of step.coordinates) {
+        const d = haversineDistance(userLat, userLng, coord[1], coord[0]);
+        if (d < minDist) minDist = d;
+      }
+
+      if (minDist < bestDistToPath) {
+        bestDistToPath = minDist;
+        bestStepIdx = i;
       }
     }
 
-    // Advance if user passed the step (within 50m of start and moving forward)
-    if (bestIdx <= prevStepIdx.current && bestDist < 50 && bestIdx < steps.length - 1) {
-      bestIdx = prevStepIdx.current + 1;
+    // Distance to the END of this step (maneuver point)
+    const step = steps[bestStepIdx];
+    let distToEnd = Infinity;
+    if (step?.coordinates?.length > 0) {
+      const endCoord = step.coordinates[step.coordinates.length - 1];
+      distToEnd = haversineDistance(userLat, userLng, endCoord[1], endCoord[0]) * 1000;
     }
 
-    prevStepIdx.current = bestIdx;
-    setCurrentStepIdx(bestIdx);
+    // Advance to next step only if:
+    // 1. User is within 20m of the maneuver point
+    // 2. At least 5 seconds since last advance
+    // 3. There is a next step
+    const now = Date.now();
+    if (bestStepIdx >= prevStepIdx.current &&
+        distToEnd < 20 &&
+        now - lastAdvanceTime.current > 5000 &&
+        bestStepIdx < steps.length - 1) {
+      bestStepIdx = prevStepIdx.current + 1;
+      lastAdvanceTime.current = now;
+    }
 
-    // Distance remaining to next maneuver point
-    if (steps[bestIdx]?.coordinates?.length > 0) {
-      const target = steps[bestIdx].coordinates[steps[bestIdx].coordinates.length - 1];
-      setDistToStep(haversineDistance(userLat, userLng, target[1], target[0]));
+    prevStepIdx.current = bestStepIdx;
+    setCurrentStepIdx(bestStepIdx);
+
+    // Distance to next maneuver
+    const nextStep = steps[bestStepIdx];
+    if (nextStep?.coordinates?.length > 0) {
+      const endCoord = nextStep.coordinates[nextStep.coordinates.length - 1];
+      setDistToStep(haversineDistance(userLat, userLng, endCoord[1], endCoord[0]) * 1000);
     }
   }, [userLat, userLng, steps, visible]);
 
@@ -131,16 +158,21 @@ export default function NavigationBanner({ steps, userLat, userLng, totalDistanc
   const step = steps[currentStepIdx];
   if (!step) return null;
 
-  const isArriving = step.type === 'arrive';
   const icon = getManeuverIcon(step.type, step.modifier);
   const label = getManeuverLabel(step.type, step.modifier);
   const roadName = step.name || '';
-  const remaining = totalDistance - steps.slice(0, currentStepIdx).reduce((sum, s) => sum + s.distance, 0);
+
+  // Progress based on actual distance traveled
+  const progress = totalDistance > 0
+    ? Math.max(0, Math.min(100, ((totalDistance - remainingDist) / totalDistance) * 100))
+    : 0;
+
+  // Estimate remaining duration based on progress
+  const estRemainingDur = totalDuration * (1 - progress / 100);
 
   return (
-    <div className="absolute top-0 left-0 right-0" style={{ zIndex: 998 }}>
-      {/* Main instruction */}
-      <div className="mx-4 mt-2 bg-gray-900/90 backdrop-blur-sm text-white rounded-xl shadow-2xl overflow-hidden">
+    <div className="absolute left-0 right-0" style={{ zIndex: 997, top: '120px' }}>
+      <div className="mx-4 bg-gray-900/90 backdrop-blur-sm text-white rounded-xl shadow-2xl overflow-hidden">
         <div className="flex items-center gap-3 px-4 py-3">
           <div className="text-3xl shrink-0 w-10 text-center">{icon}</div>
           <div className="flex-1 min-w-0">
@@ -156,18 +188,16 @@ export default function NavigationBanner({ steps, userLat, userLng, totalDistanc
           </div>
         </div>
 
-        {/* Progress bar */}
         <div className="h-1 bg-gray-700">
           <div
-            className="h-full bg-blue-500 transition-all duration-500"
-            style={{ width: `${Math.max(5, Math.min(100, (1 - remaining / totalDistance) * 100))}%` }}
+            className="h-full bg-blue-500 transition-all duration-1000"
+            style={{ width: `${progress}%` }}
           />
         </div>
 
-        {/* Bottom info */}
         <div className="flex items-center justify-between px-4 py-2 text-xs text-gray-400">
-          <span>{formatDist(remaining)} remaining</span>
-          <span>{formatDur(totalDuration)} to {destinationName}</span>
+          <span>{formatDist(remainingDist)} remaining</span>
+          <span>{formatDur(estRemainingDur)} to {destinationName}</span>
         </div>
       </div>
     </div>

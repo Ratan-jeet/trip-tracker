@@ -329,6 +329,8 @@ export default function TripPage() {
                 totalDistance={navTotalDist}
                 totalDuration={navTotalDur}
                 destinationName={currentTrip.route.destinationName}
+                destinationLat={currentTrip.route.destinationLat}
+                destinationLng={currentTrip.route.destinationLng}
                 visible={true}
               />
             );
