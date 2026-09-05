@@ -1,120 +1,152 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { ApiError } from '@/lib/api';
 import { useStore } from '@/lib/store';
+import AuthShell from '@/components/AuthShell';
+import Button from '@/components/ui/Button';
+import { Field, Input } from '@/components/ui/Field';
 
 export default function LoginPage() {
   const router = useRouter();
-  const login = useStore(s => s.login);
+  const login = useStore((s) => s.login);
+  const token = useStore((s) => s.token);
+  const hydrate = useStore((s) => s.hydrate);
+  const hydrated = useStore((s) => s.hydrated);
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [twoFactorCode, setTwoFactorCode] = useState('');
-  const [requiresTwoFactor, setRequiresTwoFactor] = useState(false);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [useRecovery, setUseRecovery] = useState(false);
+  const [needsTwoFactor, setNeedsTwoFactor] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
+  useEffect(() => {
+    if (!hydrated) void hydrate();
+  }, [hydrated, hydrate]);
 
+  useEffect(() => {
+    if (hydrated && token) router.replace('/dashboard');
+  }, [hydrated, token, router]);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
     try {
-      const result = await login(email, password, twoFactorCode);
-      if (result.requiresTwoFactor) {
-        setRequiresTwoFactor(true);
-      } else {
-        router.push('/dashboard');
+      const signedIn = await login(
+        email,
+        password,
+        needsTwoFactor
+          ? useRecovery
+            ? { recoveryCode: twoFactorCode }
+            : { twoFactorCode }
+          : undefined,
+      );
+      if (!signedIn) {
+        setNeedsTwoFactor(true);
+        return;
       }
-    } catch (err: any) {
-      setError(err.message || 'Login failed');
+      router.replace('/dashboard');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not sign in');
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-      <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <Link href="/" className="inline-flex items-center gap-2 text-primary-600 font-bold text-xl">
-            <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            Trip Tracker
+    <AuthShell
+      title="Welcome back"
+      subtitle="Sign in to see where your group is."
+      footer={
+        <>
+          New here?{' '}
+          <Link href="/register" className="font-medium text-accent hover:underline">
+            Create an account
           </Link>
-        </div>
-
-        <div className="bg-white rounded-2xl shadow-xl p-8">
-          <h1 className="text-2xl font-bold mb-6">Sign In</h1>
-
-          {error && (
-            <div className="bg-red-50 text-red-700 px-4 py-3 rounded-lg mb-4 text-sm">
-              {error}
-            </div>
+        </>
+      }
+    >
+      <form onSubmit={submit} className="space-y-4">
+        <Field label="Email" required>
+          {({ id }) => (
+            <Input
+              id={id}
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+              required
+              disabled={needsTwoFactor}
+              autoFocus
+            />
           )}
+        </Field>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {!requiresTwoFactor ? (
-              <>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={e => setEmail(e.target.value)}
-                    required
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
-                    placeholder="you@example.com"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={e => setPassword(e.target.value)}
-                    required
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
-                    placeholder="••••••••"
-                  />
-                </div>
-              </>
-            ) : (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">2FA Code</label>
-                <input
-                  type="text"
-                  value={twoFactorCode}
-                  onChange={e => setTwoFactorCode(e.target.value)}
-                  required
-                  maxLength={6}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none text-center text-2xl tracking-widest"
-                  placeholder="000000"
-                />
-                <p className="text-sm text-gray-500 mt-2">Enter the 6-digit code from your authenticator app</p>
-              </div>
+        <Field label="Password" required>
+          {({ id }) => (
+            <Input
+              id={id}
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              required
+              disabled={needsTwoFactor}
+            />
+          )}
+        </Field>
+
+        {needsTwoFactor && (
+          <Field
+            label={useRecovery ? 'Recovery code' : 'Authentication code'}
+            required
+            hint={useRecovery ? 'One of the codes you saved when you turned on two-factor.' : 'From your authenticator app.'}
+          >
+            {({ id, describedBy }) => (
+              <Input
+                id={id}
+                aria-describedby={describedBy}
+                value={twoFactorCode}
+                onChange={(e) => setTwoFactorCode(e.target.value)}
+                inputMode={useRecovery ? 'text' : 'numeric'}
+                autoComplete="one-time-code"
+                placeholder={useRecovery ? 'XXXXX-XXXXX' : '000000'}
+                className="text-center text-lg tracking-[0.25em] tabular"
+                autoFocus
+                required
+              />
             )}
+          </Field>
+        )}
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-3 bg-primary-600 text-white font-semibold rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {loading ? 'Signing in...' : requiresTwoFactor ? 'Verify' : 'Sign In'}
-            </button>
-          </form>
+        {error && (
+          <p role="alert" className="rounded-xl bg-danger-soft px-3.5 py-2.5 text-[13px] font-medium text-danger">
+            {error}
+          </p>
+        )}
 
-          <div className="mt-6 text-center text-sm text-gray-500">
-            Don&apos;t have an account?{' '}
-            <Link href="/register" className="text-primary-600 font-medium hover:underline">
-              Create one
-            </Link>
-          </div>
-        </div>
-      </div>
-    </div>
+        <Button type="submit" fullWidth size="lg" loading={busy}>
+          {needsTwoFactor ? 'Verify and sign in' : 'Sign in'}
+        </Button>
+
+        {needsTwoFactor && (
+          <button
+            type="button"
+            onClick={() => {
+              setUseRecovery((v) => !v);
+              setTwoFactorCode('');
+            }}
+            className="w-full text-center text-[13px] text-fg-muted hover:text-fg"
+          >
+            {useRecovery ? 'Use an authenticator code instead' : 'Lost your device? Use a recovery code'}
+          </button>
+        )}
+      </form>
+    </AuthShell>
   );
 }

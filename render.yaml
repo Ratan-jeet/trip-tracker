@@ -1,42 +1,118 @@
+# Render blueprint: API + web app + PostgreSQL.
+#
+#   1. Push this repo to GitHub.
+#   2. Render dashboard -> New -> Blueprint -> pick the repo.
+#   3. Set the two `sync: false` values when prompted (see the notes below).
+#
+# Everything here is on Render's free tier. Two things to know before relying on it:
+#
+#   * Free web services sleep after 15 minutes with no traffic and take roughly a minute
+#     to wake. The first person to open the app after a quiet spell waits for that. Live
+#     positions held in memory are lost on sleep; they are rebuilt from the next report,
+#     and the consent sweep runs on wake so nobody is left marked as sharing.
+#   * A free PostgreSQL instance is deleted by Render 30 days after creation. For anything
+#     you care about, change both `plan: free` lines to `plan: starter`.
+
 services:
-  # Backend API
+  # ---------------------------------------------------------------------------
+  # API
+  # ---------------------------------------------------------------------------
   - type: web
     name: trip-tracker-api
     runtime: node
+    plan: free
+    # Must stay `oregon`: it matches the existing services and the database. Render
+    # cannot move a service between regions, and a web service can only reach a database
+    # over the internal network when both are in the same one. Moving closer to your
+    # users means recreating all three, with new URLs.
     region: oregon
-    rootDir: backend
-    buildCommand: npm install && npm run build
-    startCommand: npm start
+    # Explicitly the repository root. The live services were created with
+    # `rootDir: backend` / `rootDir: frontend`, and if a sync leaves that in place the
+    # build runs inside a workspace directory that has no package-lock.json of its own —
+    # `npm ci` then fails on the first line. Setting this to `.` overrides it rather than
+    # relying on an omitted field being reset.
+    rootDir: .
+    # Build from the repository root: this is an npm-workspaces project with one
+    # lockfile, so installing inside backend/ alone cannot resolve dependencies.
+    # --include=dev is required: NODE_ENV=production below would otherwise make `npm ci`
+    # skip devDependencies, and typescript lives there — the build would fail on `tsc`.
+    buildCommand: npm ci --include=dev && npm run build --workspace=backend
+    startCommand: npm start --workspace=backend
     healthCheckPath: /api/health
     envVars:
+      - key: NODE_VERSION
+        value: '20.11.1'
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
         fromDatabase:
           name: trip-tracker-db
           property: connectionString
+      # Render terminates TLS with its own certificate chain on the internal network.
+      - key: DATABASE_SSL
+        value: no-verify
       - key: JWT_SECRET
         generateValue: true
+      # The API only accepts browser requests from this origin. Render supplies the bare
+      # host; the server adds the https:// scheme itself.
       - key: CORS_ORIGIN
-        value: https://trip-tracker-app.onrender.com
+        fromService:
+          name: trip-tracker-app
+          type: web
+          property: host
+      # Nominatim's usage policy requires a real contact address here. Set it to
+      # something like "TripTracker/2.0 (you@example.com)" when prompted.
+      - key: GEOCODER_USER_AGENT
+        sync: false
+      # Point at your own OSRM before carrying real traffic: the public demo server is
+      # rate-limited and explicitly not intended for production use.
+      - key: OSRM_URL
+        value: https://router.project-osrm.org
+      # Optional. Only needed to run more than one API instance — without it live
+      # positions and WebSocket fan-out stay inside a single process, which is exactly
+      # what a free single-instance service is.
+      # - key: REDIS_URL
+      #   fromService:
+      #     name: trip-tracker-redis
+      #     type: redis
+      #     property: connectionString
 
-  # Frontend
+  # ---------------------------------------------------------------------------
+  # Web app
+  # ---------------------------------------------------------------------------
   - type: web
     name: trip-tracker-app
     runtime: node
+    plan: free
     region: oregon
-    rootDir: frontend
-    buildCommand: npm install && npm run build
-    startCommand: npm start
+    # Explicitly the repository root. The live services were created with
+    # `rootDir: backend` / `rootDir: frontend`, and if a sync leaves that in place the
+    # build runs inside a workspace directory that has no package-lock.json of its own —
+    # `npm ci` then fails on the first line. Setting this to `.` overrides it rather than
+    # relying on an omitted field being reset.
+    rootDir: .
+    # Same reason: next, tailwind, postcss and the type packages are devDependencies.
+    buildCommand: npm ci --include=dev && npm run build --workspace=frontend
+    startCommand: npm start --workspace=frontend
     envVars:
+      - key: NODE_VERSION
+        value: '20.11.1'
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_TELEMETRY_DISABLED
+        value: '1'
+      # NEXT_PUBLIC_* values are read at build time and baked into the JavaScript bundle,
+      # so this must be present when `next build` runs — which it is, because Render
+      # exports service env vars to the build. The bare host Render supplies is given a
+      # scheme by the client, and the WebSocket URL is derived from this one.
       - key: NEXT_PUBLIC_API_URL
-        sync: false
-      - key: NEXT_PUBLIC_WS_URL
-        sync: false
+        fromService:
+          name: trip-tracker-api
+          type: web
+          property: host
 
-  # PostgreSQL Database
-  - type: pgsql
-    name: trip-tracker-db
-    plan: starter
+databases:
+  - name: trip-tracker-db
+    plan: free
     databaseName: trip_tracker
     ipAllowList: []

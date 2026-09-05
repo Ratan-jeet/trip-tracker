@@ -1,193 +1,206 @@
-# Trip Together Tracker
+# Trip Tracker
 
-A consensual group live location sharing app for people traveling together. Everyone in the group sees each other on ONE map in real-time. Any user can start/stop sharing at any time.
+Live location sharing for people travelling together. Everyone in a trip sees each other on
+one map, and every person controls whether they appear on it.
 
-## Features
+## What this is
 
-- **Real-time location sharing** via WebSocket
-- **Trip management** - Create trips, invite via code
-- **Consent-first** - Explicit consent screens, instant revoke
-- **Dual tracking** - Phone GPS + vehicle GPS tracker (MQTT)
-- **Interactive map** - Mapbox GL with markers, follow mode, filters
-- **History & export** - View past locations, export CSV/GPX/JSON
-- **Secure** - JWT auth, 2FA support, TLS, auto-expiring data
+- **Consent is the product.** Nothing is shared until you switch it on, and switching it off
+  takes effect immediately — the position disappears from every other member's map and the
+  device stops reporting.
+- **One shared map.** Phones and vehicle trackers on the same view, with live speed, battery
+  and distance-to-destination.
+- **Data that expires.** Positions are deleted after `LOCATION_EXPIRY_DAYS` (30 by default),
+  and any member can erase their own history for a trip at any time.
 
-## Tech Stack
+## Stack
 
 | Layer | Technology |
-|-------|-----------|
-| Frontend | Next.js 14, React, Mapbox GL, Tailwind CSS |
-| Backend | Node.js, Fastify, Socket.io |
-| Database | PostgreSQL + PostGIS, Redis |
-| Vehicle GPS | MQTT (EMQX), IMEI-based device mapping |
-| Auth | JWT, bcrypt, speakeasy (2FA) |
-| Deploy | Vercel (frontend), Render/Fly.io (backend) |
+|---|---|
+| Web | Next.js 14 (App Router), React 18, Tailwind, MapLibre GL + OpenStreetMap tiles |
+| API | Node 20, Fastify 4, native WebSockets |
+| Database | PostgreSQL (production) · SQLite via better-sqlite3 (local) |
+| Live state | Redis when `REDIS_URL` is set, in-process otherwise |
+| Auth | JWT with token versioning, bcrypt, optional TOTP 2FA with recovery codes |
 
-## Quick Start
+## Quick start
 
-### Prerequisites
-- Node.js 18+
-- Docker (for PostgreSQL, Redis, MQTT)
-
-### 1. Start Services
+Requires Node 20.11 or newer.
 
 ```bash
-docker-compose up -d
+npm ci
+cp backend/.env.example backend/.env          # works as-is for local development
+cp frontend/.env.local.example frontend/.env.local
+npm run db:migrate                            # creates ./backend/trip_together.db
+npm run db:seed                               # optional demo accounts
+npm run dev                                   # API on :3001, web on :3000
 ```
 
-### 2. Setup Backend
+`docker compose up -d` starts PostgreSQL and Redis if you want to develop against them;
+set `DATABASE_URL` and `REDIS_URL` in `backend/.env` to use them.
+
+Seeded accounts are `alice@example.com` and `bob@example.com`, password `password123`.
+Both start with sharing **off** — turn it on from the trip screen.
+
+## How location reaches the server
+
+`POST /api/location/update` accepts two kinds of caller:
+
+**A signed-in member's phone.** Send `Authorization: Bearer <jwt>`. The device must belong
+to the caller, and the caller must currently be sharing on that trip.
+
+**A vehicle tracker.** Register a `vehicle` device; the response contains a `deviceToken`,
+returned exactly once. The tracker then sends:
 
 ```bash
-cd backend
-cp .env.example .env   # Edit with your values
-npm install
-npm run db:migrate
-npm run db:seed          # Creates test users + trip
-npm run dev              # Starts on http://localhost:3001
+curl -X POST https://your-api/api/location/update \
+  -H 'Content-Type: application/json' \
+  -H 'X-Device-Token: <deviceToken>' \
+  -d '{"tripId":"...","deviceId":"...","lat":15.5,"lng":73.8,"speed":16.6,"ignitionStatus":true}'
 ```
 
-### 3. Setup Frontend
+An unauthenticated request is rejected. Client-supplied `timestamp` values outside the
+configured skew window are replaced with server time.
 
-```bash
-cd frontend
-cp .env.local.example .env.local   # Add Mapbox token
-npm install
-npm run dev              # Starts on http://localhost:3000
-```
+To bridge an MQTT broker, subscribe to your tracker topic and forward each message to the
+same endpoint with the device's token. `backend/src/mqtt/handler.ts` is the place for it.
 
-### 4. Test Login
-
-| Email | Password | Role |
-|-------|----------|------|
-| alice@example.com | password123 | admin |
-| bob@example.com | password123 | member |
-
-## API Endpoints
+## API
 
 ### Auth
-- `POST /api/auth/register` - Create account
-- `POST /api/auth/login` - Sign in
-- `GET /api/auth/me` - Current user
-- `POST /api/auth/2fa/enable` - Enable 2FA
-- `POST /api/auth/2fa/verify` - Verify 2FA code
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/api/auth/register` | |
+| POST | `/api/auth/login` | Returns `{requiresTwoFactor:true}` when 2FA is on |
+| GET | `/api/auth/me` | |
+| POST | `/api/auth/2fa/enable` | Requires the account password |
+| POST | `/api/auth/2fa/verify` | Enables 2FA, returns one-time recovery codes |
+| POST | `/api/auth/2fa/disable` | Requires password **and** a current code |
+| POST | `/api/auth/logout-all` | Invalidates every issued token |
 
 ### Trips
-- `POST /api/trips` - Create trip
-- `GET /api/trips` - List user's trips
-- `GET /api/trips/:id` - Trip details + members
-- `POST /api/trips/join` - Join via invite code
-- `POST /api/trips/:id/leave` - Leave trip
-- `DELETE /api/trips/:id` - Delete trip (admin)
-- `POST /api/trips/:id/share` - Toggle sharing + consent
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/api/trips` | |
+| GET | `/api/trips` | |
+| GET | `/api/trips/:id` | Members, devices, route |
+| POST | `/api/trips/join` | Invite code is case-insensitive |
+| POST | `/api/trips/:id/share` | `{isSharing: true \| false}` — both directions |
+| POST | `/api/trips/:id/leave` | |
+| POST | `/api/trips/:id/end` | Creator only |
+| DELETE | `/api/trips/:id` | Creator only |
+| POST | `/api/trips/:id/remove-member` | Admin only; rotates the invite code |
+| POST | `/api/trips/:id/promote` | Admin only; the creator cannot be demoted |
+| POST | `/api/trips/:id/invite-code` | Admin only; issues a new code |
+| POST · DELETE | `/api/trips/:id/route` | Admin only |
 
 ### Locations
-- `POST /api/location/update` - Send location
-- `GET /api/trips/:id/live` - Live positions
-- `GET /api/trips/:id/history` - History by date range
-- `GET /api/trips/:id/export?format=csv|gpx|json` - Export
-
-### Devices
-- `POST /api/devices` - Register device (phone/vehicle)
-- `GET /api/trips/:id/devices` - List trip devices
-- `DELETE /api/devices/:id` - Remove device
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/api/devices` | Vehicle devices receive a `deviceToken` |
+| GET | `/api/trips/:id/devices` | |
+| DELETE | `/api/devices/:id` | Owner or admin |
+| POST | `/api/location/update` | See above |
+| GET | `/api/trips/:id/live` | Only members who are currently sharing |
+| GET | `/api/trips/:id/history` | Paginated, capped by `HISTORY_MAX_ROWS` |
+| GET | `/api/trips/:id/export` | `format=csv\|gpx\|json` |
+| DELETE | `/api/trips/:id/my-data` | Erase your own recorded positions |
+| GET | `/api/trips/:id/routing` | OSRM proxy |
+| GET | `/api/trips/:id/geocode` | Place search proxy |
 
 ### WebSocket
 
-Connect to `ws://localhost:3001/ws`:
+Connect to `/ws`, then:
 
-```json
-// 1. Authenticate
-{"type": "auth", "token": "<jwt>"}
-
-// 2. Subscribe to trip
-{"type": "subscribe_trip", "tripId": "<uuid>"}
-
-// 3. Receive updates
-{"type": "location_update", "deviceId": "...", "lat": 15.5, "lng": 73.8, ...}
+```jsonc
+{"type": "auth", "token": "<jwt>"}          // wait for {"type":"auth_success"}
+{"type": "subscribe_trip", "tripId": "..."} // then {"type":"initial_locations", ...}
 ```
 
-## Vehicle Tracker Setup
+Server messages: `location_update`, `initial_locations`, `route_update`, `members_changed`,
+`devices_changed`, `access_revoked`, `trip_ended`, `trip_deleted`.
 
-### Supported Devices
-- **Teltonika FMB003** - OBD-II plug & play
-- **Teltonika FMC130** - Hardwired 12V
-- **Queclen GL520** - Portable magnetic
+## Configuration
 
-### MQTT Configuration
-- Broker: `mqtt://your-server:1883`
-- Topic: `device/{IMEI}/location`
-- Payload: `{"lat": 15.5, "lng": 73.8, "speed": 60, "ignition": true, "battery": 85}`
+Everything is validated at boot from `backend/.env`; see `backend/.env.example` for the full
+list. In production the server **refuses to start** without a `JWT_SECRET` of at least 32
+characters and a `DATABASE_URL`.
 
-### IoT SIM Cards
-- Hologram (LTE-M, $2/mo + $0.06/MB)
-- 1NCE (LTE-M + 2G fallback, €5 for 10yr)
-- Airtel IoT (50-100MB/mo, ₹49/mo)
-- Jio IoT (100MB/mo, ₹49/mo)
+Notable settings:
 
-### Config in Device
-```
-APN: hologram (or carrier-specific)
-Server: mqtt.yourdomain.com:1883
-Interval: 10 seconds
-Protocol: MQTT
-```
+| Variable | Purpose |
+|---|---|
+| `DATABASE_SSL` | `strict` (verify certificates, default) · `no-verify` · `off` |
+| `REDIS_URL` | Required for more than one API instance |
+| `OSRM_URL` | Point at your own OSRM; the public demo server is not for production |
+| `GEOCODER_USER_AGENT` | Nominatim requires a contact address |
+| `LOCATION_EXPIRY_DAYS` | Retention window, swept every `RETENTION_SWEEP_HOURS` |
 
-## Architecture
+## Privacy notes
 
-```
-┌──────────────┐     ┌─────────────────┐     ┌──────────────┐
-│   Frontend   │────▶│   Backend API   │────▶│  PostgreSQL   │
-│  (Next.js)   │     │   (Fastify)     │     │  + PostGIS   │
-│  Mapbox GL   │     │   WebSocket     │     └──────────────┘
-└──────────────┘     │   JWT Auth      │
-       │             └────────┬────────┘
-       │                      │
-       │ WebSocket            │
-       │                      ▼
-       │             ┌─────────────────┐
-       │             │     Redis       │
-       │             │  Live positions │
-       │             └─────────────────┘
-       │
-       │             ┌─────────────────┐
-       └────────────▶│  MQTT Broker    │
-                     │    (EMQX)       │
-                     └────────┬────────┘
-                              │
-                              ▼
-                     ┌─────────────────┐
-                     │ Vehicle Tracker │
-                     │  (Teltonika)    │
-                     └─────────────────┘
-```
-
-## Security
-
-- JWT tokens for authentication
-- bcrypt password hashing (12 rounds)
-- Optional 2FA via TOTP
-- Trip-scoped data isolation
-- Location data auto-expires after 30 days
-- Audit log of all access
-- TLS in production
+- Routing and place search are proxied through the API, so member coordinates and search
+  queries never go from the browser to a third party.
+- Consent, membership changes, history reads and exports are written to `audit_logs`.
+  Individual GPS fixes are not — the `locations` table is that record.
+- Removing a member rotates the trip's invite code so they cannot rejoin with the old one.
 
 ## Deployment
 
-### Frontend (Vercel)
+### Render (both services)
+
+`render.yaml` is a complete blueprint: API, web app and PostgreSQL, all on the free tier.
+
+1. Push this repo to GitHub.
+2. Render dashboard → **New** → **Blueprint** → select the repo.
+3. Render prompts for the one value it cannot derive: `GEOCODER_USER_AGENT`. Nominatim's
+   usage policy requires a contact address, so use something like
+   `TripTracker/2.0 (you@example.com)`.
+
+Everything else is wired automatically — the database URL, a generated `JWT_SECRET`, and
+the two services pointing at each other. `CORS_ORIGIN` and `NEXT_PUBLIC_API_URL` come from
+Render's `fromService` wiring as bare hostnames; the app adds the `https://`/`wss://`
+scheme itself, so there is nothing to paste by hand.
+
+Know these three things before you rely on it:
+
+| | |
+|---|---|
+| **Free services sleep** | After 15 minutes without traffic, and take about a minute to wake. The first person to open the app after a quiet spell waits for that. |
+| **Free PostgreSQL expires** | Render deletes a free database 30 days after creation. Change both `plan: free` lines to `plan: starter` for anything you intend to keep. |
+| **Live state is per-process** | Without `REDIS_URL` the live positions and WebSocket fan-out live in one process, which is all a free single-instance service has. Sleeping clears them; they rebuild from the next report, and the consent sweep runs on wake so nobody stays marked as sharing. |
+
+`region: oregon` matches the existing deployment and the database. A service cannot be
+moved between regions, and it can only reach the database over the internal network when
+both are in the same one — so changing region means recreating all three resources with
+new URLs.
+
+Three details in the blueprint that are easy to get wrong if you rewrite it:
+
+- the build commands need `npm ci --include=dev` — with `NODE_ENV=production` set, npm
+  otherwise skips the devDependencies that `tsc` and `next build` live in;
+- `rootDir: .` is explicit, because the v1 blueprint set `rootDir: backend`/`frontend` and
+  `npm ci` fails inside a workspace directory that has no lockfile of its own;
+- `JWT_SECRET` must be at least 32 characters or the API refuses to start.
+
+### Vercel (web app only)
+
+`vercel deploy`. Set `NEXT_PUBLIC_API_URL` to the API's origin; the WebSocket URL is
+derived from it.
+
+### Docker
+
+Two targets rather than one container running both processes.
+
 ```bash
-vercel deploy
+docker build --target api -t trip-tracker-api .
+docker build --target web -t trip-tracker-web \
+  --build-arg NEXT_PUBLIC_API_URL=https://api.example.com .
 ```
 
-### Backend (Render)
-1. Connect GitHub repo
-2. Set environment variables
-3. Deploy with `render.yaml` config
+## Database
 
-### Backend (Fly.io)
-```bash
-fly launch
-fly deploy
-```
+Schema changes go in `backend/src/db/migrations.ts` as a new numbered entry; they are applied
+at boot and by `npm run db:migrate`, tracked in `schema_migrations`.
 
 ## License
 

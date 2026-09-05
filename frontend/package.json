@@ -1,15 +1,18 @@
 {
   "name": "trip-tracker-frontend",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
+  "engines": {
+    "node": ">=20.11"
+  },
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
+    "start": "next start -p ${PORT:-3000}",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "dayjs": "^1.11.12",
     "maplibre-gl": "^6.6.0",
     "next": "^14.2.5",
     "react": "^18.3.1",
@@ -17,7 +20,6 @@
     "zustand": "^4.5.4"
   },
   "devDependencies": {
-    "@types/maplibre-gl": "^1.13.2",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.4.19",

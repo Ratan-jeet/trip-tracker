@@ -1,25 +1,63 @@
 /** @type {import('tailwindcss').Config} */
+const withOpacity = (variable) => `hsl(var(${variable}) / <alpha-value>)`;
+
 module.exports = {
-  content: [
-    './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
-    './src/components/**/*.{js,ts,jsx,tsx,mdx}',
-    './src/app/**/*.{js,ts,jsx,tsx,mdx}',
-  ],
+  darkMode: ['class', '[data-theme="dark"]'],
+  content: ['./src/components/**/*.{js,ts,jsx,tsx,mdx}', './src/app/**/*.{js,ts,jsx,tsx,mdx}'],
   theme: {
     extend: {
       colors: {
-        primary: {
-          50: '#eff6ff',
-          100: '#dbeafe',
-          200: '#bfdbfe',
-          300: '#93c5fd',
-          400: '#60a5fa',
-          500: '#3b82f6',
-          600: '#2563eb',
-          700: '#1d4ed8',
-          800: '#1e40af',
-          900: '#1e3a8a',
+        // Semantic roles only — see globals.css. No raw palette scales in components.
+        surface: {
+          DEFAULT: withOpacity('--bg-elevated'),
+          base: withOpacity('--bg'),
+          subtle: withOpacity('--bg-subtle'),
+          inset: withOpacity('--bg-inset'),
         },
+        border: {
+          DEFAULT: withOpacity('--border'),
+          strong: withOpacity('--border-strong'),
+        },
+        fg: {
+          DEFAULT: withOpacity('--text'),
+          muted: withOpacity('--text-muted'),
+          subtle: withOpacity('--text-subtle'),
+        },
+        accent: {
+          DEFAULT: withOpacity('--accent'),
+          hover: withOpacity('--accent-hover'),
+          fg: withOpacity('--accent-fg'),
+          soft: withOpacity('--accent-soft'),
+        },
+        live: {
+          DEFAULT: withOpacity('--live'),
+          soft: withOpacity('--live-soft'),
+        },
+        warning: {
+          DEFAULT: withOpacity('--warning'),
+          soft: withOpacity('--warning-soft'),
+        },
+        danger: {
+          DEFAULT: withOpacity('--danger'),
+          hover: withOpacity('--danger-hover'),
+          soft: withOpacity('--danger-soft'),
+        },
+        vehicle: withOpacity('--vehicle'),
+        ring: withOpacity('--ring'),
+      },
+      boxShadow: {
+        sm: 'var(--shadow-sm)',
+        md: 'var(--shadow-md)',
+        lg: 'var(--shadow-lg)',
+      },
+      animation: {
+        'fade-in-up': 'fade-in-up 0.18s ease-out',
+        'pulse-ring': 'pulse-ring 2s cubic-bezier(0.2, 0.6, 0.4, 1) infinite',
+      },
+      // Keeps floating map controls clear of iOS home indicators and notches.
+      spacing: {
+        'safe-b': 'env(safe-area-inset-bottom, 0px)',
+        'safe-t': 'env(safe-area-inset-top, 0px)',
       },
     },
   },

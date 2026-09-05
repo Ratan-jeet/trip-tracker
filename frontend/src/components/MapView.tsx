@@ -3,343 +3,402 @@
 import { useEffect, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-
-function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLng / 2) * Math.sin(dLng / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
-function formatDistance(km: number): string {
-  if (km < 1) return `${Math.round(km * 1000)}m`;
-  return `${km.toFixed(1)} km`;
-}
-
-function formatTime(hours: number): string {
-  if (hours < 1 / 60) return 'Arrived';
-  if (hours < 1) return `${Math.round(hours * 60)} min`;
-  const h = Math.floor(hours);
-  const m = Math.round((hours - h) * 60);
-  return m > 0 ? `${h}h ${m}m` : `${h}h`;
-}
-
-function createMarkerHtml(deviceType: string, isStale: boolean, batteryLevel?: number, ownerName?: string, speed?: number, heading?: number) {
-  const colors: Record<string, string> = { phone: '#3b82f6', vehicle: '#ef4444' };
-  const emojis: Record<string, string> = { phone: '📱', vehicle: '🚗' };
-  const color = isStale ? '#6b7280' : (colors[deviceType] || '#6b7280');
-  const emoji = emojis[deviceType] || '📍';
-  const label = ownerName || 'Unknown';
-  const speedText = speed ? `${(speed * 3.6).toFixed(0)} km/h` : '';
-  const rotation = heading != null ? `transform: rotate(${heading}deg);` : '';
-
-  return `
-    <div style="position:relative;display:flex;flex-direction:column;align-items:center;">
-      <div style="position:relative;width:40px;height:40px;">
-        <div style="position:absolute;inset:-4px;border-radius:50%;background:${color};opacity:0.3;animation:pulse-ring 1.5s infinite;"></div>
-        <div style="width:40px;height:40px;border-radius:50%;background:${color};display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 2px 8px rgba(0,0,0,0.3);color:white;border:3px solid white;${rotation}">
-          ${emoji}
-        </div>
-        ${batteryLevel !== undefined ? `<div style="position:absolute;bottom:-4px;right:-4px;background:white;border-radius:10px;padding:1px 4px;font-size:10px;font-weight:bold;box-shadow:0 1px 3px rgba(0,0,0,0.2);">${batteryLevel}%</div>` : ''}
-      </div>
-      <div style="margin-top:2px;background:white;padding:1px 4px;border-radius:4px;font-size:9px;font-weight:600;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,0.2);color:#374151;max-width:80px;overflow:hidden;text-overflow:ellipsis;">${label}</div>
-      ${speedText ? `<div style="font-size:8px;color:#6b7280;white-space:nowrap;">${speedText}</div>` : ''}
-    </div>
-  `;
-}
+import type { LivePosition, TripRoute } from '@/lib/api';
+import { formatSpeed, initialsOf, isStale } from '@/lib/format';
 
 interface MapViewProps {
-  locations: any[];
+  locations: LivePosition[];
   followDeviceId: string | null;
-  route?: { destinationName: string; destinationLat: number; destinationLng: number; waypoints: { lat: number; lng: number }[] } | null;
-  centerOn?: { lat: number; lng: number } | null;
+  route: TripRoute | null;
+  routeGeometry: Array<[number, number]>;
+  centerOn: { lat: number; lng: number; nonce: number } | null;
+  heading: number | null;
+  currentUserId?: string;
+  onSelectDevice?: (deviceId: string) => void;
   onMapReady?: (map: maplibregl.Map) => void;
-  heading?: number | null;
-  isFollowing?: boolean;
 }
 
-export default function MapView({ locations, followDeviceId, route, centerOn, onMapReady, heading, isFollowing }: MapViewProps) {
-  const mapContainer = useRef<HTMLDivElement>(null);
-  const svgContainer = useRef<HTMLDivElement>(null);
+const ROUTE_SOURCE = 'trip-route';
+const ROUTE_LAYER = 'trip-route-line';
+const ROUTE_CASING = 'trip-route-casing';
+
+/** Both tile sets are free to use; neither needs an account or a token. */
+const BASEMAPS = {
+  light: {
+    tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+    attribution: '© OpenStreetMap contributors',
+  },
+  dark: {
+    tiles: ['https://cartodb-basemaps-a.global.ssl.fastly.net/dark_all/{z}/{x}/{y}.png'],
+    attribution: '© OpenStreetMap contributors, © CARTO',
+  },
+} as const;
+
+/** Reads a CSS custom property so the map matches the app theme. */
+function themeColor(name: string, fallback: string): string {
+  if (typeof window === 'undefined') return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value ? `hsl(${value})` : fallback;
+}
+
+function prefersDark(): boolean {
+  if (typeof window === 'undefined') return false;
+  const explicit = document.documentElement.getAttribute('data-theme');
+  if (explicit === 'dark') return true;
+  if (explicit === 'light') return false;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+/**
+ * Marker element, built once per device and mutated in place.
+ *
+ * The previous implementation interpolated `ownerName` and `deviceName` straight into
+ * `innerHTML` on every update. Those values are set by other members, which made the map
+ * a stored-XSS sink — and with the session token in localStorage, one crafted display
+ * name was enough to take over every other member's account. Nothing here is parsed as
+ * HTML: text goes through textContent.
+ */
+function createMarkerElement(): {
+  root: HTMLDivElement;
+  update: (position: LivePosition, opts: { isSelf: boolean; stale: boolean }) => void;
+} {
+  const root = document.createElement('div');
+  root.className = 'flex flex-col items-center gap-1 cursor-pointer';
+
+  const puck = document.createElement('div');
+  puck.className = 'relative grid h-9 w-9 place-items-center rounded-full border-[3px] border-white shadow-md';
+
+  const pulse = document.createElement('span');
+  pulse.className = 'absolute inset-0 rounded-full animate-pulse-ring';
+  puck.appendChild(pulse);
+
+  const initials = document.createElement('span');
+  initials.className = 'relative text-[11px] font-bold leading-none text-white';
+  puck.appendChild(initials);
+
+  const battery = document.createElement('span');
+  battery.className =
+    'absolute -bottom-1 -right-1 rounded-full bg-white px-1 text-[9px] font-bold leading-[14px] text-slate-700 shadow';
+  puck.appendChild(battery);
+
+  const label = document.createElement('span');
+  label.className =
+    'max-w-[110px] truncate rounded-md bg-white/95 px-1.5 py-0.5 text-[10px] font-semibold text-slate-800 shadow-sm';
+
+  const speed = document.createElement('span');
+  speed.className = 'rounded bg-black/55 px-1 text-[9px] font-medium leading-4 text-white tabular';
+
+  root.append(puck, label, speed);
+
+  return {
+    root,
+    update(position, { isSelf, stale }) {
+      const color = stale
+        ? '#94a3b8'
+        : position.deviceType === 'vehicle'
+          ? themeColor('--vehicle', '#f97316')
+          : isSelf
+            ? themeColor('--live', '#16a34a')
+            : themeColor('--accent', '#2563eb');
+
+      puck.style.background = color;
+      pulse.style.background = color;
+      pulse.style.display = stale ? 'none' : '';
+      root.style.opacity = stale ? '0.65' : '1';
+
+      // textContent, never innerHTML.
+      initials.textContent =
+        position.deviceType === 'vehicle' ? '▲' : initialsOf(position.ownerName || position.deviceName);
+      label.textContent = position.ownerName || position.deviceName || 'Unknown device';
+
+      const speedText = formatSpeed(position.speed);
+      speed.textContent = speedText ?? '';
+      speed.style.display = speedText ? '' : 'none';
+
+      if (position.batteryLevel == null) {
+        battery.style.display = 'none';
+      } else {
+        battery.style.display = '';
+        battery.textContent = `${position.batteryLevel}%`;
+      }
+
+      // Only the vehicle glyph rotates; rotating a text badge makes it unreadable.
+      initials.style.transform =
+        position.deviceType === 'vehicle' && position.heading != null ? `rotate(${position.heading}deg)` : '';
+    },
+  };
+}
+
+export default function MapView({
+  locations,
+  followDeviceId,
+  route,
+  routeGeometry,
+  centerOn,
+  heading,
+  currentUserId,
+  onSelectDevice,
+  onMapReady,
+}: MapViewProps) {
+  const container = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
-  const markers = useRef<Map<string, maplibregl.Marker>>(new Map());
-  const destMarker = useRef<maplibregl.Marker | null>(null);
-  const [mapReady, setMapReady] = useState(false);
-  const routeCoordsRef = useRef<[number, number][]>([]);
-  const memberCoordsRef = useRef<[number, number][]>([]);
+  const markers = useRef(new Map<string, { marker: maplibregl.Marker; update: ReturnType<typeof createMarkerElement>['update'] }>());
+  const destinationMarker = useRef<maplibregl.Marker | null>(null);
   const smoothedBearing = useRef<number | null>(null);
+  const hasFitted = useRef<string | null>(null);
+  const [ready, setReady] = useState(false);
 
-  // Project lnglat to screen pixels
-  const projectToScreen = (lng: number, lat: number): { x: number; y: number } | null => {
-    if (!map.current) return null;
-    const p = map.current.project([lng, lat]);
-    return { x: p.x, y: p.y };
-  };
-
-  // Render SVG route lines
-  const renderLines = () => {
-    const svg = svgContainer.current;
-    if (!svg) return;
-    let svgEl = svg.querySelector('svg');
-    if (!svgEl) {
-      svgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      svgEl.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:visible;';
-      svg.appendChild(svgEl);
-    }
-
-    // Clear old lines
-    while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
-
-    const routeCoords = routeCoordsRef.current;
-    const memberCoords = memberCoordsRef.current;
-
-    // Draw route line (dark blue)
-    if (routeCoords.length > 1) {
-      const points = routeCoords
-        .map(c => projectToScreen(c[0], c[1]))
-        .filter((p): p is { x: number; y: number } => p !== null);
-      if (points.length > 1) {
-        const path = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-        path.setAttribute('points', points.map(p => `${p.x},${p.y}`).join(' '));
-        path.setAttribute('fill', 'none');
-        path.setAttribute('stroke', '#1a56db');
-        path.setAttribute('stroke-width', '6');
-        path.setAttribute('stroke-linecap', 'round');
-        path.setAttribute('stroke-linejoin', 'round');
-        path.setAttribute('opacity', '0.9');
-        svgEl.appendChild(path);
-      }
-    }
-
-    // Draw member lines (light blue)
-    if (memberCoords.length > 1) {
-      const points = memberCoords
-        .map(c => projectToScreen(c[0], c[1]))
-        .filter((p): p is { x: number; y: number } => p !== null && !isNaN(p.x) && !isNaN(p.y));
-      if (points.length > 1) {
-        const path = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-        path.setAttribute('points', points.map(p => `${p.x},${p.y}`).join(' '));
-        path.setAttribute('fill', 'none');
-        path.setAttribute('stroke', '#60a5fa');
-        path.setAttribute('stroke-width', '3');
-        path.setAttribute('stroke-linecap', 'round');
-        path.setAttribute('stroke-linejoin', 'round');
-        path.setAttribute('opacity', '0.7');
-        svgEl.appendChild(path);
-      }
-    }
-  };
-
-  // Initialize map + bind SVG redraw to map events (uses refs so always current)
+  // --- map instance -------------------------------------------------------
   useEffect(() => {
-    if (!mapContainer.current || map.current) return;
-    const m = new maplibregl.Map({
-      container: mapContainer.current,
+    if (!container.current || map.current) return;
+
+    const basemap = BASEMAPS[prefersDark() ? 'dark' : 'light'];
+    const instance = new maplibregl.Map({
+      container: container.current,
       style: {
         version: 8,
-        sources: { osm: { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256, attribution: '© OpenStreetMap' } },
-        layers: [{ id: 'osm', type: 'raster', source: 'osm', minzoom: 0, maxzoom: 19 }],
+        sources: {
+          basemap: {
+            type: 'raster',
+            tiles: [...basemap.tiles],
+            tileSize: 256,
+            attribution: basemap.attribution,
+          },
+        },
+        layers: [{ id: 'basemap', type: 'raster', source: 'basemap', minzoom: 0, maxzoom: 19 }],
       },
-      center: [78.9629, 22.5937], zoom: 5, bearing: 0, pitch: 0,
+      center: [78.9629, 22.5937],
+      zoom: 4,
+      attributionControl: { compact: true },
     });
-    m.addControl(new maplibregl.NavigationControl({ showCompass: true, showZoom: true }), 'top-right');
-    m.on('load', () => { setMapReady(true); onMapReady?.(m); });
-    // renderLines reads from refs, so always gets current coords
-    m.on('move', renderLines);
-    m.on('zoom', renderLines);
-    m.on('rotate', renderLines);
-    m.on('resize', renderLines);
-    map.current = m;
-    return () => { m.remove(); map.current = null; };
+
+    instance.addControl(new maplibregl.NavigationControl({ showCompass: true, visualizePitch: false }), 'top-right');
+    instance.addControl(new maplibregl.ScaleControl({ maxWidth: 90, unit: 'metric' }), 'bottom-left');
+
+    instance.on('load', () => {
+      // A GeoJSON source + line layer. The previous version projected every route
+      // coordinate to screen space and rebuilt an SVG polyline on every move, zoom and
+      // rotate frame, which is why the route flickered and lagged while panning.
+      instance.addSource(ROUTE_SOURCE, {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+      instance.addLayer({
+        id: ROUTE_CASING,
+        type: 'line',
+        source: ROUTE_SOURCE,
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#ffffff', 'line-width': 9, 'line-opacity': 0.85 },
+      });
+      instance.addLayer({
+        id: ROUTE_LAYER,
+        type: 'line',
+        source: ROUTE_SOURCE,
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': themeColor('--accent', '#2563eb'), 'line-width': 5 },
+      });
+      setReady(true);
+      onMapReady?.(instance);
+    });
+
+    map.current = instance;
+    // Captured now: the ref may point elsewhere by the time cleanup runs.
+    const markerRegistry = markers.current;
+    return () => {
+      instance.remove();
+      map.current = null;
+      markerRegistry.clear();
+      setReady(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Destination marker + fit
+  // --- basemap follows the theme -----------------------------------------
+  // The tile set was chosen once at mount, so toggling the theme left a light basemap
+  // under a dark interface until the page was reloaded. Watch both the `data-theme`
+  // attribute the toggle sets and the OS preference behind the "system" setting.
   useEffect(() => {
-    if (!map.current || !mapReady) return;
-    if (destMarker.current) { destMarker.current.remove(); destMarker.current = null; }
-    routeCoordsRef.current = [];
-    memberCoordsRef.current = [];
-    renderLines();
+    if (!ready) return;
 
+    const applyTheme = () => {
+      const instance = map.current;
+      if (!instance) return;
+      const next = BASEMAPS[prefersDark() ? 'dark' : 'light'];
+      // setTiles swaps the imagery without rebuilding the style, so the route layer,
+      // markers and current camera all survive.
+      const source = instance.getSource('basemap') as { setTiles?: (tiles: string[]) => void } | undefined;
+      source?.setTiles?.([...next.tiles]);
+      if (instance.getLayer(ROUTE_LAYER)) {
+        instance.setPaintProperty(ROUTE_LAYER, 'line-color', themeColor('--accent', '#2563eb'));
+      }
+    };
+
+    const observer = new MutationObserver(applyTheme);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    media.addEventListener('change', applyTheme);
+
+    return () => {
+      observer.disconnect();
+      media.removeEventListener('change', applyTheme);
+    };
+  }, [ready]);
+
+  // --- route line ---------------------------------------------------------
+  useEffect(() => {
+    if (!map.current || !ready) return;
+    const source = map.current.getSource(ROUTE_SOURCE) as maplibregl.GeoJSONSource | undefined;
+    if (!source) return;
+
+    source.setData(
+      routeGeometry.length > 1
+        ? {
+            type: 'FeatureCollection',
+            features: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: routeGeometry } }],
+          }
+        : { type: 'FeatureCollection', features: [] },
+    );
+  }, [routeGeometry, ready]);
+
+  // --- destination marker -------------------------------------------------
+  useEffect(() => {
+    if (!map.current || !ready) return;
+
+    destinationMarker.current?.remove();
+    destinationMarker.current = null;
     if (!route) return;
 
-    const destEl = document.createElement('div');
-    destEl.innerHTML = `<div style="font-size:32px;text-shadow:0 2px 4px rgba(0,0,0,0.3);">🏁</div>`;
-    destMarker.current = new maplibregl.Marker({ element: destEl })
+    const el = document.createElement('div');
+    el.className = 'grid h-8 w-8 place-items-center rounded-full bg-white shadow-md ring-2 ring-black/10';
+    const pin = document.createElement('span');
+    pin.className = 'text-base leading-none';
+    pin.textContent = '\u{1F3C1}';
+    el.appendChild(pin);
+
+    const popup = new maplibregl.Popup({ offset: 18, closeButton: false });
+    const popupBody = document.createElement('div');
+    const name = document.createElement('strong');
+    name.className = 'block text-[13px]';
+    name.textContent = route.destinationName; // textContent, not setHTML
+    const sub = document.createElement('span');
+    sub.className = 'text-[11px] opacity-70';
+    sub.textContent = 'Destination';
+    popupBody.append(name, sub);
+    popup.setDOMContent(popupBody);
+
+    destinationMarker.current = new maplibregl.Marker({ element: el, anchor: 'bottom' })
       .setLngLat([route.destinationLng, route.destinationLat])
-      .setPopup(new maplibregl.Popup().setHTML(`<b>${route.destinationName}</b><br>Destination`))
+      .setPopup(popup)
       .addTo(map.current);
+  }, [route, ready]);
 
-    const pts: [number, number][] = [[route.destinationLng, route.destinationLat]];
-    locations.forEach(l => pts.push([l.lng, l.lat]));
-    if (pts.length > 1) {
-      const bounds = pts.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(pts[0], pts[0]));
-      map.current.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 800 });
-    } else {
-      map.current.easeTo({ center: [route.destinationLng, route.destinationLat], zoom: 12, duration: 600 });
-    }
-  }, [route, mapReady]);
-
-  // Fetch OSRM route line + member lines
+  // --- markers ------------------------------------------------------------
   useEffect(() => {
-    if (!map.current || !mapReady || !route) return;
+    if (!map.current || !ready) return;
+    const now = Date.now();
 
-    const sLng = locations.length > 0 ? locations[0].lng : map.current.getCenter().lng;
-    const sLat = locations.length > 0 ? locations[0].lat : map.current.getCenter().lat;
+    for (const position of locations) {
+      const stale = isStale(position.timestamp, now);
+      const isSelf = !!currentUserId && position.ownerId === currentUserId;
 
-    // Fetch main route line
-    fetch(`https://router.project-osrm.org/route/v1/driving/${sLng},${sLat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`)
-      .then(r => r.json())
-      .then(data => {
-        if (data.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
-          routeCoordsRef.current = data.routes[0].geometry.coordinates;
-        } else {
-          routeCoordsRef.current = [[sLng, sLat], [route.destinationLng, route.destinationLat]];
-        }
-        renderLines();
-      })
-      .catch(() => {
-        routeCoordsRef.current = [[sLng, sLat], [route.destinationLng, route.destinationLat]];
-        renderLines();
-      });
-
-    // Fit when locations arrive
-    if (locations.length > 0) {
-      const pts: [number, number][] = [[route.destinationLng, route.destinationLat]];
-      locations.forEach(l => pts.push([l.lng, l.lat]));
-      const bounds = pts.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(pts[0], pts[0]));
-      map.current.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 800 });
-    }
-  }, [route, locations, mapReady]);
-
-  // Member lines — debounced
-  const memberTimer = useRef<any>(null);
-  useEffect(() => {
-    if (!map.current || !mapReady || !route || locations.length === 0) return;
-    if (memberTimer.current) clearTimeout(memberTimer.current);
-    memberTimer.current = setTimeout(async () => {
-      const allCoords: [number, number][] = [];
-      for (const loc of locations) {
-        try {
-          const res = await fetch(`https://router.project-osrm.org/route/v1/driving/${loc.lng},${loc.lat};${route.destinationLng},${route.destinationLat}?overview=full&geometries=geojson`);
-          const data = await res.json();
-          if (data.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
-            allCoords.push(...data.routes[0].geometry.coordinates);
-            allCoords.push([NaN, NaN]);
-          }
-        } catch {
-          allCoords.push([loc.lng, loc.lat], [route.destinationLng, route.destinationLat], [NaN, NaN]);
-        }
+      let entry = markers.current.get(position.deviceId);
+      if (!entry) {
+        const { root, update } = createMarkerElement();
+        root.addEventListener('click', () => onSelectDevice?.(position.deviceId));
+        const marker = new maplibregl.Marker({ element: root, anchor: 'center' })
+          .setLngLat([position.lng, position.lat])
+          .addTo(map.current);
+        entry = { marker, update };
+        markers.current.set(position.deviceId, entry);
+      } else {
+        // Move the existing marker rather than rebuilding its DOM every tick.
+        entry.marker.setLngLat([position.lng, position.lat]);
       }
-      memberCoordsRef.current = allCoords.filter(c => !isNaN(c[0]));
-      renderLines();
-    }, 2000);
-    return () => { if (memberTimer.current) clearTimeout(memberTimer.current); };
-  }, [locations, route, mapReady]);
+      entry.update(position, { isSelf, stale });
+    }
 
-  // Center
+    for (const [deviceId, entry] of markers.current) {
+      if (!locations.some((l) => l.deviceId === deviceId)) {
+        entry.marker.remove();
+        markers.current.delete(deviceId);
+      }
+    }
+  }, [locations, ready, currentUserId, onSelectDevice]);
+
+  // --- initial framing ----------------------------------------------------
+  // Fits once per route (or once when the first positions arrive). The old code refit on
+  // every `locations` change, so the camera snapped back every few seconds while panning.
+  useEffect(() => {
+    if (!map.current || !ready || followDeviceId) return;
+
+    const key = `${route?.id ?? 'no-route'}:${locations.length > 0}`;
+    if (hasFitted.current === key) return;
+
+    const points: Array<[number, number]> = locations.map((l) => [l.lng, l.lat]);
+    if (route) points.push([route.destinationLng, route.destinationLat]);
+    if (points.length === 0) return;
+
+    hasFitted.current = key;
+    if (points.length === 1) {
+      map.current.easeTo({ center: points[0], zoom: 14, duration: 700 });
+    } else {
+      const bounds = points.reduce(
+        (acc, point) => acc.extend(point),
+        new maplibregl.LngLatBounds(points[0], points[0]),
+      );
+      map.current.fitBounds(bounds, { padding: { top: 80, bottom: 160, left: 60, right: 60 }, maxZoom: 15, duration: 800 });
+    }
+  }, [locations, route, ready, followDeviceId]);
+
+  // --- explicit recentre --------------------------------------------------
   useEffect(() => {
     if (!map.current || !centerOn) return;
-    map.current.easeTo({ center: [centerOn.lng, centerOn.lat], zoom: 16, duration: 1000 });
+    map.current.easeTo({ center: [centerOn.lng, centerOn.lat], zoom: 16, duration: 800 });
   }, [centerOn]);
 
-  // Markers
+  // --- follow mode --------------------------------------------------------
   useEffect(() => {
-    if (!map.current || !mapReady) return;
-    const clusters: { lat: number; lng: number; members: number[] }[] = [];
-    locations.forEach((loc, i) => {
-      const c = clusters.find(c => Math.abs(c.lat - loc.lat) < 0.0003 && Math.abs(c.lng - loc.lng) < 0.0003);
-      if (c) c.members.push(i); else clusters.push({ lat: loc.lat, lng: loc.lng, members: [i] });
-    });
-    const offsets = new Map<number, number>();
-    clusters.forEach(c => { if (c.members.length > 1) c.members.forEach((idx, i) => offsets.set(idx, i * 30)); });
+    if (!map.current || !ready || !followDeviceId) return;
+    const target = locations.find((l) => l.deviceId === followDeviceId);
+    if (!target) return;
+    map.current.easeTo({ center: [target.lng, target.lat], duration: 900 });
+  }, [locations, followDeviceId, ready]);
 
-    locations.forEach((loc, idx) => {
-      const { deviceId, lat, lng, deviceType, ownerName, speed, batteryLevel, isStale, heading, accuracy, timestamp, deviceName } = loc;
-      const offsetLat = lat + ((offsets.get(idx) || 0) * 0.00001);
-      const popupHtml = `<div style="min-width:140px;font-family:system-ui;"><div style="font-weight:bold;font-size:13px;margin-bottom:4px;">${ownerName || deviceName}</div><div style="font-size:11px;">${speed ? `<div>Speed: ${(speed * 3.6).toFixed(1)} km/h</div>` : ''}${accuracy ? `<div>Accuracy: ${accuracy.toFixed(0)}m</div>` : ''}<div style="color:#999;">${new Date(timestamp).toLocaleTimeString()}</div></div></div>`;
-
-      if (!markers.current.has(deviceId)) {
-        const el = document.createElement('div');
-        el.innerHTML = createMarkerHtml(deviceType, isStale, batteryLevel, ownerName, speed, heading);
-        const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
-          .setLngLat([lng, offsetLat])
-          .setPopup(new maplibregl.Popup().setHTML(popupHtml))
-          .addTo(map.current!);
-        markers.current.set(deviceId, marker);
-      } else {
-        const marker = markers.current.get(deviceId)!;
-        marker.setLngLat([lng, offsetLat]);
-        marker.getElement().innerHTML = createMarkerHtml(deviceType, isStale, batteryLevel, ownerName, speed, heading);
-      }
-    });
-    markers.current.forEach((marker, id) => {
-      if (!locations.find((l: any) => l.deviceId === id)) { marker.remove(); markers.current.delete(id); }
-    });
-    if (followDeviceId) {
-      const f = locations.find((l: any) => l.deviceId === followDeviceId);
-      if (f && map.current) map.current.easeTo({ center: [f.lng, f.lat], zoom: 16, duration: 1000 });
-    }
-  }, [locations, followDeviceId, mapReady]);
-
-  // Smooth heading rotation — EMA + dead zone + min speed
+  // --- heading-based rotation --------------------------------------------
   useEffect(() => {
-    if (!map.current || !mapReady) return;
+    if (!map.current || !ready) return;
 
-    // Not following or no heading → ease back to north
-    if (!isFollowing || heading == null || heading < 0) {
+    const reduceMotion =
+      typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (!followDeviceId || heading == null || heading < 0 || reduceMotion) {
       if (smoothedBearing.current !== null) {
         smoothedBearing.current = null;
-        map.current.easeTo({ bearing: 0, duration: 500 });
+        map.current.easeTo({ bearing: 0, duration: 400 });
       }
       return;
     }
 
-    const EMA_ALPHA = 0.3;
-    const DEAD_ZONE = 5;
-    const MIN_SPEED_KMH = 3;
+    const followed = locations.find((l) => l.deviceId === followDeviceId);
+    // Below walking pace the reported heading is mostly noise.
+    if ((followed?.speed ?? 0) * 3.6 < 3) return;
 
-    // Find followed device speed
-    const followLoc = followDeviceId ? locations.find((l: any) => l.deviceId === followDeviceId) : null;
-    const speedKmh = followLoc?.speed ? followLoc.speed * 3.6 : 0;
-
-    // Only rotate when moving
-    if (speedKmh < MIN_SPEED_KMH) return;
-
-    const targetBearing = heading;
-
-    // EMA smoothing
     if (smoothedBearing.current === null) {
-      smoothedBearing.current = targetBearing;
+      smoothedBearing.current = heading;
     } else {
-      // Handle wrap-around (350° → 10° should go through 0, not 180)
-      let diff = targetBearing - smoothedBearing.current;
-      if (diff > 180) diff -= 360;
-      if (diff < -180) diff += 360;
-      smoothedBearing.current = (smoothedBearing.current + diff * EMA_ALPHA + 360) % 360;
+      let delta = heading - smoothedBearing.current;
+      if (delta > 180) delta -= 360;
+      if (delta < -180) delta += 360;
+      smoothedBearing.current = (smoothedBearing.current + delta * 0.3 + 360) % 360;
     }
 
-    // Dead zone — ignore micro changes
-    const currentBearing = map.current.getBearing();
-    const bearingDiff = Math.abs(smoothedBearing.current - ((currentBearing + 360) % 360));
-    if (bearingDiff < DEAD_ZONE || bearingDiff > 360 - DEAD_ZONE) return;
+    const current = (map.current.getBearing() + 360) % 360;
+    const diff = Math.abs(smoothedBearing.current - current);
+    if (diff < 5 || diff > 355) return;
 
-    map.current.easeTo({
-      bearing: -smoothedBearing.current,
-      duration: 300,
-    });
-  }, [heading, isFollowing, followDeviceId, locations, mapReady]);
+    map.current.easeTo({ bearing: smoothedBearing.current, duration: 400 });
+  }, [heading, followDeviceId, locations, ready]);
 
-  return (
-    <div className="relative w-full h-full">
-      <div ref={mapContainer} className="w-full h-full" />
-      <div ref={svgContainer} className="absolute inset-0 pointer-events-none" style={{ zIndex: 400 }} />
-    </div>
-  );
+  return <div ref={container} className="h-full w-full" aria-label="Map of trip members" role="application" />;
 }
-
-export { haversineDistance, formatDistance, formatTime };

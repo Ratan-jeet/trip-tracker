@@ -2,89 +2,141 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { ApiError, type ConsentLevel } from '@/lib/api';
 import { useStore } from '@/lib/store';
-import TripList from '@/components/TripList';
 import CreateTripModal from '@/components/CreateTripModal';
 import JoinTripModal from '@/components/JoinTripModal';
+import ThemeToggle from '@/components/ThemeToggle';
+import TripList from '@/components/TripList';
+import Button from '@/components/ui/Button';
+import Spinner from '@/components/ui/Spinner';
+import { useToast } from '@/components/ui/Toast';
+import { initialsOf } from '@/lib/format';
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { user, token, trips, fetchMe, fetchTrips, logout } = useStore();
+  const toast = useToast();
+  const { token, user, trips, hydrated, hydrate, fetchTrips, createTrip, joinTrip, logout } = useStore();
+
+  const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [showJoin, setShowJoin] = useState(false);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (!hydrated) void hydrate();
+  }, [hydrated, hydrate]);
+
+  useEffect(() => {
+    if (!hydrated) return;
     if (!token) {
-      router.push('/login');
+      router.replace('/login');
       return;
     }
-    Promise.all([fetchMe(), fetchTrips()]).finally(() => setLoading(false));
-  }, [token, fetchMe, fetchTrips, router]);
+    fetchTrips()
+      .catch((err) => toast.error(err instanceof ApiError ? err.message : 'Could not load your trips'))
+      .finally(() => setLoading(false));
+  }, [hydrated, token, router, fetchTrips, toast]);
 
-  if (loading) {
+  const handleCreate = async (name: string, description?: string) => {
+    const trip = await createTrip(name, description);
+    toast.success('Trip created — share the invite code to bring people in.');
+    router.push(`/trip/${trip.id}`);
+  };
+
+  const handleJoin = async (code: string, consentLevel: ConsentLevel, startSharing: boolean) => {
+    await joinTrip(code, consentLevel, startSharing);
+    toast.success('You have joined the trip.');
+  };
+
+  if (!hydrated || loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
+      <div className="grid min-h-dvh place-items-center">
+        <Spinner className="h-8 w-8 text-accent" label="Loading your trips" />
       </div>
     );
   }
 
-  if (!user) return null;
+  const active = trips.filter((t) => t.isActive);
+  const ended = trips.filter((t) => !t.isActive);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200 px-4 py-4">
-        <div className="max-w-5xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <svg className="w-8 h-8 text-primary-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            <h1 className="text-xl font-bold text-gray-900">Trip Tracker</h1>
+    <main className="mx-auto min-h-dvh max-w-4xl px-5 pb-16 pt-6">
+      <header className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <span
+            className="grid h-10 w-10 place-items-center rounded-full bg-accent text-[13px] font-bold text-accent-fg"
+            aria-hidden="true"
+          >
+            {initialsOf(user?.displayName)}
+          </span>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-fg">{user?.displayName}</p>
+            <p className="truncate text-xs text-fg-muted">{user?.email}</p>
           </div>
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-600">{user.displayName}</span>
-            <button
-              onClick={logout}
-              className="text-sm text-gray-500 hover:text-gray-700"
-            >
-              Sign Out
-            </button>
-          </div>
+        </div>
+
+        <div className="flex items-center gap-1">
+          <ThemeToggle />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              logout();
+              router.replace('/login');
+            }}
+          >
+            Sign out
+          </Button>
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 py-8">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h2 className="text-2xl font-bold text-gray-900">Your Trips</h2>
-            <p className="text-gray-500 mt-1">Manage and join group trips</p>
-          </div>
-          <div className="flex gap-3">
-            <button
-              onClick={() => setShowJoin(true)}
-              className="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-50 transition-colors"
-            >
-              Join Trip
-            </button>
-            <button
-              onClick={() => setShowCreate(true)}
-              className="px-4 py-2 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 transition-colors"
-            >
-              Create Trip
-            </button>
+      <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold tracking-tight text-fg">Your trips</h1>
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={() => setShowJoin(true)}>
+            Join with a code
+          </Button>
+          <Button
+            onClick={() => setShowCreate(true)}
+            icon={
+              <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4">
+                <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            }
+          >
+            New trip
+          </Button>
+        </div>
+      </div>
+
+      {trips.length === 0 ? (
+        <div className="mt-10 rounded-2xl border border-dashed border-border-strong px-6 py-14 text-center">
+          <h2 className="text-base font-semibold text-fg">No trips yet</h2>
+          <p className="mx-auto mt-1.5 max-w-sm text-[13px] leading-relaxed text-fg-muted">
+            Create a trip and share the invite code, or join one someone has already set up. Nothing is shared until you
+            switch it on.
+          </p>
+          <div className="mt-6 flex justify-center gap-2">
+            <Button variant="secondary" onClick={() => setShowJoin(true)}>
+              Join with a code
+            </Button>
+            <Button onClick={() => setShowCreate(true)}>Create a trip</Button>
           </div>
         </div>
+      ) : (
+        <div className="mt-6 space-y-8">
+          {active.length > 0 && <TripList trips={active} />}
+          {ended.length > 0 && (
+            <section>
+              <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-fg-subtle">Ended</h2>
+              <TripList trips={ended} />
+            </section>
+          )}
+        </div>
+      )}
 
-        <TripList
-          trips={trips}
-          onSelect={(tripId) => router.push(`/trip/${tripId}`)}
-        />
-      </main>
-
-      {showCreate && <CreateTripModal onClose={() => setShowCreate(false)} />}
-      {showJoin && <JoinTripModal onClose={() => setShowJoin(false)} />}
-    </div>
+      {showCreate && <CreateTripModal onClose={() => setShowCreate(false)} onCreate={handleCreate} />}
+      {showJoin && <JoinTripModal onClose={() => setShowJoin(false)} onJoin={handleJoin} />}
+    </main>
   );
 }

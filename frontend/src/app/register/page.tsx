@@ -1,142 +1,141 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { ApiError } from '@/lib/api';
 import { useStore } from '@/lib/store';
+import AuthShell from '@/components/AuthShell';
+import Button from '@/components/ui/Button';
+import { Field, Input } from '@/components/ui/Field';
 
 export default function RegisterPage() {
   const router = useRouter();
-  const register = useStore(s => s.register);
+  const register = useStore((s) => s.register);
+  const token = useStore((s) => s.token);
+  const hydrate = useStore((s) => s.hydrate);
+  const hydrated = useStore((s) => s.hydrated);
+
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
-  const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [phone, setPhone] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
+  useEffect(() => {
+    if (!hydrated) void hydrate();
+  }, [hydrated, hydrate]);
 
-    if (password !== confirmPassword) {
-      setError('Passwords do not match');
-      return;
-    }
+  useEffect(() => {
+    if (hydrated && token) router.replace('/dashboard');
+  }, [hydrated, token, router]);
 
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters');
-      return;
-    }
-
-    setLoading(true);
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    setFieldErrors({});
     try {
       await register(email, password, displayName, phone || undefined);
-      router.push('/dashboard');
-    } catch (err: any) {
-      setError(err.message || 'Registration failed');
+      router.replace('/dashboard');
+    } catch (err) {
+      if (err instanceof ApiError && err.details?.length) {
+        // Surface per-field messages instead of one opaque banner.
+        setFieldErrors(Object.fromEntries(err.details.map((d) => [d.field, d.message])));
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Could not create your account');
+      }
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
-      <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <Link href="/" className="inline-flex items-center gap-2 text-primary-600 font-bold text-xl">
-            <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            Trip Tracker
+    <AuthShell
+      title="Create your account"
+      subtitle="You choose when to share your location — never by default."
+      footer={
+        <>
+          Already have an account?{' '}
+          <Link href="/login" className="font-medium text-accent hover:underline">
+            Sign in
           </Link>
-        </div>
-
-        <div className="bg-white rounded-2xl shadow-xl p-8">
-          <h1 className="text-2xl font-bold mb-6">Create Account</h1>
-
-          {error && (
-            <div className="bg-red-50 text-red-700 px-4 py-3 rounded-lg mb-4 text-sm">
-              {error}
-            </div>
+        </>
+      }
+    >
+      <form onSubmit={submit} className="space-y-4">
+        <Field label="Name" required error={fieldErrors.displayName}>
+          {({ id, invalid }) => (
+            <Input
+              id={id}
+              invalid={invalid}
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              autoComplete="name"
+              maxLength={100}
+              required
+              autoFocus
+            />
           )}
+        </Field>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Display Name</label>
-              <input
-                type="text"
-                value={displayName}
-                onChange={e => setDisplayName(e.target.value)}
-                required
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
-                placeholder="Your name"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-              <input
-                type="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                required
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
-                placeholder="you@example.com"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Phone (optional)</label>
-              <input
-                type="tel"
-                value={phone}
-                onChange={e => setPhone(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
-                placeholder="+1 234 567 8900"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                required
-                minLength={8}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
-                placeholder="At least 8 characters"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Confirm Password</label>
-              <input
-                type="password"
-                value={confirmPassword}
-                onChange={e => setConfirmPassword(e.target.value)}
-                required
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
-                placeholder="Repeat password"
-              />
-            </div>
+        <Field label="Email" required error={fieldErrors.email}>
+          {({ id, invalid }) => (
+            <Input
+              id={id}
+              invalid={invalid}
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
+              required
+            />
+          )}
+        </Field>
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-3 bg-primary-600 text-white font-semibold rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {loading ? 'Creating account...' : 'Create Account'}
-            </button>
-          </form>
+        <Field label="Password" required hint="At least 8 characters." error={fieldErrors.password}>
+          {({ id, describedBy, invalid }) => (
+            <Input
+              id={id}
+              aria-describedby={describedBy}
+              invalid={invalid}
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="new-password"
+              minLength={8}
+              required
+            />
+          )}
+        </Field>
 
-          <div className="mt-6 text-center text-sm text-gray-500">
-            Already have an account?{' '}
-            <Link href="/login" className="text-primary-600 font-medium hover:underline">
-              Sign in
-            </Link>
-          </div>
-        </div>
-      </div>
-    </div>
+        <Field label="Phone" hint="Optional — helps your group recognise you." error={fieldErrors.phone}>
+          {({ id, describedBy, invalid }) => (
+            <Input
+              id={id}
+              aria-describedby={describedBy}
+              invalid={invalid}
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              autoComplete="tel"
+              maxLength={20}
+            />
+          )}
+        </Field>
+
+        {error && (
+          <p role="alert" className="rounded-xl bg-danger-soft px-3.5 py-2.5 text-[13px] font-medium text-danger">
+            {error}
+          </p>
+        )}
+
+        <Button type="submit" fullWidth size="lg" loading={busy}>
+          Create account
+        </Button>
+      </form>
+    </AuthShell>
   );
 }

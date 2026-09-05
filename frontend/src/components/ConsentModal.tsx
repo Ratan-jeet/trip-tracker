@@ -1,113 +1,143 @@
 'use client';
 
 import { useState } from 'react';
+import type { ConsentLevel } from '@/lib/api';
+import Button from './ui/Button';
+import Modal from './ui/Modal';
+import { cn } from './ui/cn';
 
 interface ConsentModalProps {
   tripName: string;
+  /** Current state — the dialog either asks to start sharing or confirms stopping. */
   isSharing: boolean;
-  onConfirm: (consentLevel?: string) => void;
+  onConfirm: (consentLevel: ConsentLevel) => Promise<void>;
   onClose: () => void;
 }
 
+// Each of these is enforced: see the consent-level effects in the trip screen and the
+// server-side idle sweep that catches a browser closed without warning.
+const LEVELS: Array<{ value: ConsentLevel; title: string; detail: string }> = [
+  { value: 'once', title: 'Just this once', detail: 'Stops as soon as you leave this screen.' },
+  {
+    value: 'while_using',
+    title: 'While I have the trip open',
+    detail: 'Pauses when you switch away, resumes when you come back.',
+  },
+  { value: 'always', title: 'Until I turn it off', detail: 'Keeps sharing while the trip screen is open.' },
+];
+
+/**
+ * This component existed in the codebase but was never rendered anywhere, and the API
+ * refused to turn sharing off regardless. Both halves now work.
+ */
 export default function ConsentModal({ tripName, isSharing, onConfirm, onClose }: ConsentModalProps) {
-  const [consentLevel, setConsentLevel] = useState('while_using');
+  const [level, setLevel] = useState<ConsentLevel>('while_using');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await onConfirm(level);
+      onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (isSharing) {
     return (
-      <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4" style={{ zIndex: 9999 }} onClick={onClose}>
-        <div className="bg-white rounded-2xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
-          <div className="text-center mb-6">
-            <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <svg className="w-8 h-8 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-              </svg>
-            </div>
-            <h3 className="text-xl font-bold text-gray-900 mb-2">Stop Sharing Location?</h3>
-            <p className="text-gray-500">
-              Members of <strong>{tripName}</strong> will no longer see your live location.
-            </p>
-          </div>
-
-          <div className="flex gap-3">
-            <button
-              onClick={onClose}
-              className="flex-1 py-3 border border-gray-300 rounded-lg font-medium text-gray-700 hover:bg-gray-50"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={() => onConfirm()}
-              className="flex-1 py-3 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700"
-            >
-              Stop Sharing
-            </button>
-          </div>
+      <Modal
+        title="Stop sharing your location?"
+        onClose={onClose}
+        size="sm"
+        dismissable={!busy}
+        footer={
+          <>
+            <Button variant="secondary" onClick={onClose} disabled={busy}>
+              Keep sharing
+            </Button>
+            <Button variant="danger" onClick={submit} loading={busy}>
+              Stop sharing
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3 text-sm leading-relaxed text-fg-muted">
+          <p>
+            Your live position disappears from <span className="font-medium text-fg">{tripName}</span> immediately, and
+            your device stops reporting.
+          </p>
+          <p className="rounded-xl bg-surface-inset px-3.5 py-3 text-[13px]">
+            Positions already recorded stay in the trip history. To erase those too, use{' '}
+            <span className="font-medium text-fg">Delete my location data</span> in the trip menu.
+          </p>
         </div>
-      </div>
+      </Modal>
     );
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4" style={{ zIndex: 9999 }} onClick={onClose}>
-      <div className="bg-white rounded-2xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
-        <div className="text-center mb-6">
-          <div className="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
-            <svg className="w-8 h-8 text-primary-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-          </div>
-          <h3 className="text-xl font-bold text-gray-900 mb-2">Share Live Location?</h3>
-          <p className="text-gray-500">
-            Share your location with <strong>{tripName}</strong>?
-          </p>
-        </div>
-
-        <div className="space-y-2 mb-6">
+    <Modal
+      title="Share your live location?"
+      description={tripName}
+      onClose={onClose}
+      dismissable={!busy}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
+            Not now
+          </Button>
+          <Button variant="live" onClick={submit} loading={busy}>
+            Start sharing
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <ul className="space-y-2 text-[13px] text-fg-muted">
           {[
-            { value: 'once', label: 'Allow Once', desc: 'This session only' },
-            { value: 'while_using', label: 'Allow While Using', desc: 'While app is open (Recommended)' },
-            { value: 'always', label: 'Allow Always', desc: 'Even in background' },
-          ].map((opt) => (
+            'Everyone in this trip sees where you are, in real time.',
+            'You can stop at any moment — it takes effect instantly.',
+            'Sharing also stops on its own after 15 minutes of silence.',
+            'Positions are deleted automatically after 30 days.',
+          ].map((line) => (
+            <li key={line} className="flex gap-2.5">
+              <svg viewBox="0 0 24 24" fill="none" className="mt-0.5 h-4 w-4 shrink-0 text-live">
+                <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <span>{line}</span>
+            </li>
+          ))}
+        </ul>
+
+        <fieldset className="space-y-2">
+          <legend className="mb-2 text-[13px] font-medium text-fg">How long?</legend>
+          {LEVELS.map((option) => (
             <label
-              key={opt.value}
-              className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                consentLevel === opt.value
-                  ? 'border-primary-500 bg-primary-50'
-                  : 'border-gray-200 hover:bg-gray-50'
-              }`}
+              key={option.value}
+              className={cn(
+                'flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors',
+                level === option.value
+                  ? 'border-accent bg-accent-soft'
+                  : 'border-border hover:border-border-strong hover:bg-surface-inset',
+              )}
             >
               <input
                 type="radio"
-                name="consent"
-                value={opt.value}
-                checked={consentLevel === opt.value}
-                onChange={e => setConsentLevel(e.target.value)}
-                className="mt-0.5"
+                name="consent-level"
+                value={option.value}
+                checked={level === option.value}
+                onChange={() => setLevel(option.value)}
+                className="mt-0.5 h-4 w-4 accent-[hsl(var(--accent))]"
               />
-              <div>
-                <div className="font-medium text-gray-900">{opt.label}</div>
-                <div className="text-sm text-gray-500">{opt.desc}</div>
-              </div>
+              <span className="min-w-0">
+                <span className="block text-[13px] font-medium text-fg">{option.title}</span>
+                <span className="block text-xs text-fg-muted">{option.detail}</span>
+              </span>
             </label>
           ))}
-        </div>
-
-        <div className="flex gap-3">
-          <button
-            onClick={onClose}
-            className="flex-1 py-3 border border-gray-300 rounded-lg font-medium text-gray-700 hover:bg-gray-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => onConfirm(consentLevel)}
-            className="flex-1 py-3 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700"
-          >
-            Share Location
-          </button>
-        </div>
+        </fieldset>
       </div>
-    </div>
+    </Modal>
   );
 }

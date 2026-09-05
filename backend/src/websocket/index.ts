@@ -1,142 +1,204 @@
-import { FastifyInstance, FastifyRequest } from 'fastify';
-import { WebSocket } from 'ws';
-import { queryOne } from '../db/helpers';
-import { getLiveLocations } from '../db/cache-wrapper';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { WebSocket } from 'ws';
+import { queryOne } from '../db';
+import { events, getLivePositions } from '../db/cache';
+import { getVisibleDevices } from '../lib/access';
 
-interface TripWebSocket extends WebSocket {
+interface TripSocket extends WebSocket {
   tripId?: string;
   userId?: string;
   isAlive?: boolean;
 }
 
-const tripConnections = new Map<string, Set<TripWebSocket>>();
+const tripConnections = new Map<string, Set<TripSocket>>();
 
-async function getDeviceInfoForLocation(tripId: string, deviceId: string) {
-  const device: any = await queryOne(
-    `SELECT d.id, d.device_type, d.name, u.display_name as owner_name
-     FROM devices d LEFT JOIN users u ON d.user_id = u.id
-     WHERE d.id = $1 AND d.trip_id = $2`,
-    [deviceId, tripId]
-  );
-  if (!device) return {};
-  return {
-    deviceType: device.device_type,
-    deviceName: device.name,
-    ownerName: device.owner_name,
-  };
+function addConnection(tripId: string, socket: TripSocket): void {
+  if (!tripConnections.has(tripId)) tripConnections.set(tripId, new Set());
+  tripConnections.get(tripId)!.add(socket);
 }
 
-async function enrichLocation(tripId: string, loc: any) {
-  const deviceInfo = await getDeviceInfoForLocation(tripId, loc.deviceId);
-  return {
-    ...loc,
-    ...deviceInfo,
-    isStale: Date.now() - new Date(loc.timestamp).getTime() > 120000,
-  };
+function removeConnection(socket: TripSocket): void {
+  if (!socket.tripId) return;
+  const set = tripConnections.get(socket.tripId);
+  if (!set) return;
+  set.delete(socket);
+  if (set.size === 0) tripConnections.delete(socket.tripId);
 }
 
-export function setupWebSocket(app: FastifyInstance) {
-  app.get('/ws', { websocket: true }, (socket: TripWebSocket, request: FastifyRequest) => {
+function send(socket: TripSocket, payload: unknown): void {
+  if (socket.readyState === 1) socket.send(JSON.stringify(payload));
+}
+
+/**
+ * Fan out an event to the sockets watching a trip on this instance. Events reach here
+ * both from local publishes and, via Redis pub/sub, from other instances — so a member
+ * connected to instance A sees positions written to instance B.
+ */
+function deliver(tripId: string, event: any): void {
+  const sockets = tripConnections.get(tripId);
+  if (!sockets || sockets.size === 0) return;
+
+  // Consent revocation and trip teardown close sockets rather than just notifying them.
+  if (event?.type === 'access_revoked') {
+    for (const socket of [...sockets]) {
+      if (socket.userId === event.userId) {
+        send(socket, { type: 'access_revoked', tripId });
+        socket.close(4003, 'Access revoked');
+        removeConnection(socket);
+      } else {
+        send(socket, event);
+      }
+    }
+    return;
+  }
+
+  if (event?.type === 'trip_deleted') {
+    for (const socket of [...sockets]) {
+      send(socket, event);
+      socket.close(4004, 'Trip deleted');
+      removeConnection(socket);
+    }
+    return;
+  }
+
+  const message = JSON.stringify(event);
+  for (const socket of sockets) {
+    if (socket.readyState === 1) socket.send(message);
+  }
+}
+
+events.on('trip-event', deliver);
+
+export function setupWebSocket(app: FastifyInstance): void {
+  app.get('/ws', { websocket: true }, (socket: TripSocket, _request: FastifyRequest) => {
     socket.isAlive = true;
-    let authenticated = false;
+    socket.on('pong', () => {
+      socket.isAlive = true;
+    });
 
-    socket.on('pong', () => { socket.isAlive = true; });
+    // A socket that never authenticates is dropped rather than left open.
+    const authDeadline = setTimeout(() => {
+      if (!socket.userId) {
+        send(socket, { type: 'auth_error', error: 'Authentication timed out' });
+        socket.close(4001, 'Authentication timed out');
+      }
+    }, 10_000);
 
-    socket.on('message', async (data) => {
+    socket.on('message', async (raw) => {
+      let message: any;
       try {
-        const message = JSON.parse(data.toString());
+        message = JSON.parse(raw.toString());
+      } catch {
+        return send(socket, { type: 'error', error: 'Invalid message format' });
+      }
 
+      try {
         if (message.type === 'auth') {
+          let decoded: { userId: string; tv?: number };
           try {
-            const decoded = app.jwt.verify<{ userId: string }>(message.token);
-            socket.userId = decoded.userId;
-            authenticated = true;
-            socket.send(JSON.stringify({ type: 'auth_success' }));
+            decoded = app.jwt.verify<{ userId: string; tv?: number }>(message.token);
           } catch {
-            socket.send(JSON.stringify({ type: 'auth_error', error: 'Invalid token' }));
-            socket.close();
+            send(socket, { type: 'auth_error', error: 'Invalid token' });
+            return socket.close(4001, 'Invalid token');
           }
-          return;
+
+          // Honour the same token_version check the HTTP routes apply, so signing out
+          // everywhere also drops live sockets.
+          const user = await queryOne<{ token_version: number }>('SELECT token_version FROM users WHERE id = $1', [
+            decoded.userId,
+          ]);
+          if (!user || (decoded.tv ?? 0) !== (user.token_version ?? 0)) {
+            send(socket, { type: 'auth_error', error: 'Session expired' });
+            return socket.close(4001, 'Session expired');
+          }
+
+          socket.userId = decoded.userId;
+          clearTimeout(authDeadline);
+          return send(socket, { type: 'auth_success' });
         }
 
-        if (!authenticated) {
-          socket.send(JSON.stringify({ type: 'error', error: 'Not authenticated' }));
-          return;
+        if (!socket.userId) {
+          return send(socket, { type: 'error', error: 'Not authenticated' });
         }
 
         if (message.type === 'subscribe_trip') {
-          const tripId = message.tripId;
-          const memberCheck = await queryOne('SELECT id FROM trip_members WHERE trip_id = $1 AND user_id = $2', [tripId, socket.userId]);
-          if (!memberCheck) {
-            socket.send(JSON.stringify({ type: 'error', error: 'Not a member' }));
-            return;
-          }
+          const tripId = String(message.tripId ?? '');
+          const membership = await queryOne('SELECT id FROM trip_members WHERE trip_id = $1 AND user_id = $2', [
+            tripId,
+            socket.userId,
+          ]);
+          if (!membership) return send(socket, { type: 'error', error: 'Not a member of this trip' });
 
-          if (socket.tripId) {
-            const prev = tripConnections.get(socket.tripId);
-            if (prev) { prev.delete(socket); if (prev.size === 0) tripConnections.delete(socket.tripId); }
-          }
-
+          removeConnection(socket);
           socket.tripId = tripId;
-          if (!tripConnections.has(tripId)) tripConnections.set(tripId, new Set());
-          tripConnections.get(tripId)!.add(socket);
-          socket.send(JSON.stringify({ type: 'subscribed', tripId }));
+          addConnection(tripId, socket);
+          send(socket, { type: 'subscribed', tripId });
 
-          const liveLocations = await getLiveLocations(tripId);
-          const enriched = await Promise.all(liveLocations.map(loc => enrichLocation(tripId, loc)));
-          socket.send(JSON.stringify({ type: 'initial_locations', locations: enriched }));
+          // One query for the whole device roster instead of one per position.
+          const visible = await getVisibleDevices(tripId);
+          const positions = await getLivePositions(tripId);
+          send(socket, {
+            type: 'initial_locations',
+            locations: positions
+              .filter((p) => visible.has(p.deviceId))
+              .map((p) => {
+                const device = visible.get(p.deviceId)!;
+                return {
+                  deviceId: p.deviceId,
+                  lat: p.lat,
+                  lng: p.lng,
+                  accuracy: p.accuracy,
+                  speed: p.speed,
+                  heading: p.heading,
+                  batteryLevel: p.batteryLevel,
+                  ignitionStatus: p.ignitionStatus,
+                  timestamp: p.timestamp,
+                  deviceType: device.deviceType,
+                  deviceName: device.name,
+                  ownerId: device.ownerId,
+                  ownerName: device.ownerName,
+                };
+              }),
+          });
+          return;
         }
 
         if (message.type === 'unsubscribe_trip') {
-          if (socket.tripId) {
-            const conns = tripConnections.get(socket.tripId);
-            if (conns) { conns.delete(socket); if (conns.size === 0) tripConnections.delete(socket.tripId); }
-            socket.tripId = undefined;
-          }
+          removeConnection(socket);
+          socket.tripId = undefined;
+          return send(socket, { type: 'unsubscribed' });
+        }
+
+        if (message.type === 'ping') {
+          return send(socket, { type: 'pong' });
         }
       } catch (err) {
-        socket.send(JSON.stringify({ type: 'error', error: 'Invalid message format' }));
+        app.log.error({ err }, 'websocket message failed');
+        send(socket, { type: 'error', error: 'Could not process that message' });
       }
     });
 
     socket.on('close', () => {
-      if (socket.tripId) {
-        const conns = tripConnections.get(socket.tripId);
-        if (conns) { conns.delete(socket); if (conns.size === 0) tripConnections.delete(socket.tripId); }
-      }
+      clearTimeout(authDeadline);
+      removeConnection(socket);
     });
   });
 
-  const heartbeatInterval = setInterval(() => {
-    app.websocketServer?.clients.forEach((ws: WebSocket) => {
-      const socket = ws as TripWebSocket;
-      if (socket.isAlive === false) return socket.terminate();
+  const heartbeat = setInterval(() => {
+    app.websocketServer?.clients.forEach((ws) => {
+      const socket = ws as TripSocket;
+      if (socket.isAlive === false) {
+        removeConnection(socket);
+        return socket.terminate();
+      }
       socket.isAlive = false;
       socket.ping();
     });
-  }, 30000);
+  }, 30_000);
+  heartbeat.unref();
 
-  app.websocketServer?.on('close', () => clearInterval(heartbeatInterval));
-}
-
-export async function broadcastToTrip(tripId: string, data: any) {
-  const connections = tripConnections.get(tripId);
-  if (!connections) return;
-
-  const deviceInfo = await getDeviceInfoForLocation(tripId, data.deviceId);
-  const enriched = { ...data, ...deviceInfo };
-  const message = JSON.stringify(enriched);
-
-  connections.forEach((socket) => {
-    if (socket.readyState === WebSocket.OPEN) socket.send(message);
-  });
-}
-
-export function broadcastTripEvent(tripId: string, event: any) {
-  const connections = tripConnections.get(tripId);
-  if (!connections) return;
-  const message = JSON.stringify(event);
-  connections.forEach((socket) => {
-    if (socket.readyState === WebSocket.OPEN) socket.send(message);
+  app.addHook('onClose', async () => {
+    clearInterval(heartbeat);
+    events.off('trip-event', deliver);
   });
 }

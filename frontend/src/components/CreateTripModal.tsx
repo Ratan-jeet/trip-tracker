@@ -1,86 +1,89 @@
 'use client';
 
 import { useState } from 'react';
-import { useStore } from '@/lib/store';
-import { useRouter } from 'next/navigation';
+import { ApiError } from '@/lib/api';
+import Button from './ui/Button';
+import Modal from './ui/Modal';
+import { Field, Input, Textarea } from './ui/Field';
 
 interface CreateTripModalProps {
   onClose: () => void;
+  onCreate: (name: string, description?: string) => Promise<void>;
 }
 
-export default function CreateTripModal({ onClose }: CreateTripModalProps) {
-  const router = useRouter();
-  const { createTrip } = useStore();
+export default function CreateTripModal({ onClose, onCreate }: CreateTripModalProps) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError('');
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!name.trim()) return setError('Give the trip a name');
 
+    setBusy(true);
+    setError(null);
     try {
-      const trip = await createTrip(name, description);
-      router.push(`/trip/${trip.id}`);
-    } catch (err: any) {
-      setError(err.message || 'Failed to create trip');
+      await onCreate(name.trim(), description.trim() || undefined);
+      onClose();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not create the trip');
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4" style={{ zIndex: 9999 }} onClick={onClose}>
-      <div className="bg-white rounded-2xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
-        <h3 className="text-xl font-bold text-gray-900 mb-4">Create New Trip</h3>
-
-        {error && (
-          <div className="bg-red-50 text-red-700 px-4 py-3 rounded-lg mb-4 text-sm">{error}</div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Trip Name *</label>
-            <input
-              type="text"
+    <Modal
+      title="New trip"
+      description="Invite people with the code you get next."
+      onClose={onClose}
+      dismissable={!busy}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button type="submit" form="create-trip" loading={busy}>
+            Create trip
+          </Button>
+        </>
+      }
+    >
+      <form id="create-trip" onSubmit={submit} className="space-y-4">
+        <Field label="Trip name" required error={error}>
+          {({ id, describedBy, invalid }) => (
+            <Input
+              id={id}
+              aria-describedby={describedBy}
+              invalid={invalid}
               value={name}
-              onChange={e => setName(e.target.value)}
-              required
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
-              placeholder="e.g. Goa Trip 2024"
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Goa, March 2026"
+              maxLength={200}
+              autoFocus
             />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-            <textarea
-              value={description}
-              onChange={e => setDescription(e.target.value)}
-              rows={3}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none resize-none"
-              placeholder="Optional description"
-            />
-          </div>
+          )}
+        </Field>
 
-          <div className="flex gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 py-3 border border-gray-300 rounded-lg font-medium text-gray-700 hover:bg-gray-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={loading || !name.trim()}
-              className="flex-1 py-3 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 disabled:opacity-50"
-            >
-              {loading ? 'Creating...' : 'Create Trip'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <Field label="Description" hint="Optional">
+          {({ id, describedBy }) => (
+            <Textarea
+              id={id}
+              aria-describedby={describedBy}
+              rows={3}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Four of us driving down over the long weekend."
+              maxLength={2000}
+            />
+          )}
+        </Field>
+
+        <p className="rounded-xl bg-surface-inset px-3.5 py-3 text-[13px] text-fg-muted">
+          Creating a trip does not start sharing your location. You choose that on the trip screen.
+        </p>
+      </form>
+    </Modal>
   );
 }

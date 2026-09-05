@@ -1,77 +1,90 @@
 'use client';
 
 import { useState } from 'react';
-import { useStore } from '@/lib/store';
-import { useRouter } from 'next/navigation';
+import { ApiError, type ConsentLevel } from '@/lib/api';
+import Button from './ui/Button';
+import Modal from './ui/Modal';
+import { Field, Input } from './ui/Field';
 
 interface JoinTripModalProps {
   onClose: () => void;
+  onJoin: (inviteCode: string, consentLevel: ConsentLevel, startSharing: boolean) => Promise<void>;
 }
 
-export default function JoinTripModal({ onClose }: JoinTripModalProps) {
-  const router = useRouter();
-  const { joinTrip } = useStore();
-  const [inviteCode, setInviteCode] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+export default function JoinTripModal({ onClose, onJoin }: JoinTripModalProps) {
+  const [code, setCode] = useState('');
+  const [startSharing, setStartSharing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError('');
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const trimmed = code.trim();
+    if (trimmed.length < 4) return setError('Enter the 8-character invite code');
 
+    setBusy(true);
+    setError(null);
     try {
-      await joinTrip(inviteCode.toUpperCase());
+      await onJoin(trimmed, 'while_using', startSharing);
       onClose();
-      router.push('/dashboard');
-    } catch (err: any) {
-      setError(err.message || 'Invalid invite code');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not join the trip');
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4" style={{ zIndex: 9999 }} onClick={onClose}>
-      <div className="bg-white rounded-2xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
-        <h3 className="text-xl font-bold text-gray-900 mb-2">Join Trip</h3>
-        <p className="text-sm text-gray-500 mb-6">Enter the 8-character invite code shared by your group</p>
-
-        {error && (
-          <div className="bg-red-50 text-red-700 px-4 py-3 rounded-lg mb-4 text-sm">{error}</div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <input
-              type="text"
-              value={inviteCode}
-              onChange={e => setInviteCode(e.target.value.toUpperCase())}
-              required
-              maxLength={8}
-              className="w-full px-4 py-4 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none text-center text-2xl tracking-[0.3em] font-mono font-bold"
-              placeholder="XXXXXXXX"
+    <Modal
+      title="Join a trip"
+      onClose={onClose}
+      dismissable={!busy}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button type="submit" form="join-trip" loading={busy}>
+            Join trip
+          </Button>
+        </>
+      }
+    >
+      <form id="join-trip" onSubmit={submit} className="space-y-4">
+        <Field label="Invite code" required error={error} hint="Case does not matter.">
+          {({ id, describedBy, invalid }) => (
+            <Input
+              id={id}
+              aria-describedby={describedBy}
+              invalid={invalid}
+              value={code}
+              onChange={(e) => setCode(e.target.value.toUpperCase())}
+              placeholder="K7M2XQ4P"
+              maxLength={12}
+              autoFocus
+              autoCapitalize="characters"
+              autoComplete="off"
+              spellCheck={false}
+              className="text-center text-lg font-semibold tracking-[0.3em] tabular"
             />
-          </div>
+          )}
+        </Field>
 
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 py-3 border border-gray-300 rounded-lg font-medium text-gray-700 hover:bg-gray-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={loading || inviteCode.length < 8}
-              className="flex-1 py-3 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 disabled:opacity-50"
-            >
-              {loading ? 'Joining...' : 'Join Trip'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-border p-3.5 hover:bg-surface-inset">
+          <input
+            type="checkbox"
+            checked={startSharing}
+            onChange={(e) => setStartSharing(e.target.checked)}
+            className="mt-0.5 h-4 w-4 accent-[hsl(var(--live))]"
+          />
+          <span>
+            <span className="block text-[13px] font-medium text-fg">Start sharing my location right away</span>
+            <span className="block text-xs text-fg-muted">
+              Leave this off to join and decide later. You can turn sharing on or off at any time.
+            </span>
+          </span>
+        </label>
+      </form>
+    </Modal>
   );
 }

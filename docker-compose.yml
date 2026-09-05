@@ -1,4 +1,5 @@
-version: '3.8'
+# Local development services. The API and web app run on the host via `npm run dev`;
+# this file provides the backing services they talk to.
 
 services:
   postgres:
@@ -8,25 +9,28 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - '127.0.0.1:5432:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d trip_together']
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
+    # Required only when running more than one API instance: live positions and
+    # WebSocket fan-out are per-process without it.
     ports:
-      - "6379:6379"
+      - '127.0.0.1:6379:6379'
     volumes:
       - redisdata:/data
-
-  emqx:
-    image: emqx/emqx:5.5
-    ports:
-      - "1883:1883"
-      - "8083:8083"
-      - "18083:18083"
-    environment:
-      EMQX_NAME: trip-together
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
 volumes:
   pgdata:

@@ -1,84 +1,71 @@
-'use client';
-
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { useStore } from '@/lib/store';
 import Link from 'next/link';
 
-export default function Home() {
-  const router = useRouter();
-  const { user, token, fetchMe } = useStore();
-  const [loading, setLoading] = useState(true);
+const FEATURES = [
+  {
+    title: 'Consent you control',
+    body: 'Sharing starts only when you say so, and stops the moment you turn it off. Nothing is switched on for you.',
+  },
+  {
+    title: 'One shared map',
+    body: 'Everyone travelling together sees the same live view — people on phones, vehicles on trackers.',
+  },
+  {
+    title: 'Data that expires',
+    body: 'Positions are deleted automatically after 30 days, and you can erase your own history at any time.',
+  },
+];
 
-  useEffect(() => {
-    if (token) {
-      fetchMe().finally(() => setLoading(false));
-    } else {
-      setLoading(false);
-    }
-  }, [token, fetchMe]);
-
-  useEffect(() => {
-    if (!loading && user) {
-      router.push('/dashboard');
-    }
-  }, [loading, user, router]);
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-      </div>
-    );
-  }
-
+export default function LandingPage() {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-primary-600 via-primary-700 to-primary-900">
-      <div className="min-h-screen flex flex-col items-center justify-center px-4">
-        <div className="text-center mb-12">
-          <div className="inline-flex items-center justify-center w-20 h-20 bg-white/20 rounded-2xl mb-6 backdrop-blur-sm">
-            <svg className="w-10 h-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+    <main className="mx-auto flex min-h-dvh max-w-5xl flex-col px-5 py-6">
+      <header className="flex items-center justify-between">
+        <span className="flex items-center gap-2 font-semibold tracking-tight text-fg">
+          <span className="grid h-8 w-8 place-items-center rounded-xl bg-accent text-accent-fg" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4">
+              <path d="M12 21s7-5.3 7-11a7 7 0 1 0-14 0c0 5.7 7 11 7 11z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+              <circle cx="12" cy="10" r="2.5" fill="currentColor" />
             </svg>
-          </div>
-          <h1 className="text-5xl font-bold text-white mb-4">Trip Tracker</h1>
-          <p className="text-xl text-white/80 max-w-md mx-auto">
-            Share your live location with friends & family when traveling together.
-            Real-time, consensual, and secure.
-          </p>
-        </div>
+          </span>
+          Trip Tracker
+        </span>
+        <Link href="/login" className="text-sm font-medium text-fg-muted transition-colors hover:text-fg">
+          Sign in
+        </Link>
+      </header>
 
-        <div className="flex flex-col sm:flex-row gap-4">
-          <Link
-            href="/login"
-            className="px-8 py-4 bg-white text-primary-700 font-semibold rounded-xl shadow-lg hover:bg-gray-100 transition-all text-lg"
-          >
-            Sign In
-          </Link>
+      <div className="flex flex-1 flex-col justify-center py-16">
+        <h1 className="max-w-2xl text-balance text-4xl font-bold leading-[1.1] tracking-tight text-fg sm:text-5xl">
+          Everyone on one map, for as long as you choose.
+        </h1>
+        <p className="mt-5 max-w-xl text-pretty text-base leading-relaxed text-fg-muted">
+          Live location sharing for people travelling together — a road trip, a convoy, a group hike. Built so that
+          turning it off is as easy as turning it on.
+        </p>
+
+        <div className="mt-8 flex flex-wrap gap-3">
           <Link
             href="/register"
-            className="px-8 py-4 bg-white/20 text-white font-semibold rounded-xl border-2 border-white/40 hover:bg-white/30 transition-all backdrop-blur-sm text-lg"
+            className="inline-flex h-12 items-center rounded-xl bg-accent px-6 text-[15px] font-medium text-accent-fg shadow-sm transition-colors hover:bg-accent-hover"
           >
-            Create Account
+            Create an account
+          </Link>
+          <Link
+            href="/login"
+            className="inline-flex h-12 items-center rounded-xl border border-border bg-surface px-6 text-[15px] font-medium text-fg transition-colors hover:bg-surface-inset"
+          >
+            I already have one
           </Link>
         </div>
 
-        <div className="mt-16 grid grid-cols-3 gap-8 max-w-lg mx-auto text-center">
-          <div className="bg-white/10 rounded-xl p-4 backdrop-blur-sm">
-            <div className="text-3xl font-bold text-white">Live</div>
-            <div className="text-white/70 text-sm">Real-time map</div>
-          </div>
-          <div className="bg-white/10 rounded-xl p-4 backdrop-blur-sm">
-            <div className="text-3xl font-bold text-white">Safe</div>
-            <div className="text-white/70 text-sm">Consent-first</div>
-          </div>
-          <div className="bg-white/10 rounded-xl p-4 backdrop-blur-sm">
-            <div className="text-3xl font-bold text-white">Group</div>
-            <div className="text-white/70 text-sm">Travel together</div>
-          </div>
-        </div>
+        <ul className="mt-16 grid gap-6 sm:grid-cols-3">
+          {FEATURES.map((feature) => (
+            <li key={feature.title}>
+              <h2 className="text-sm font-semibold text-fg">{feature.title}</h2>
+              <p className="mt-1.5 text-[13px] leading-relaxed text-fg-muted">{feature.body}</p>
+            </li>
+          ))}
+        </ul>
       </div>
-    </div>
+    </main>
   );
 }

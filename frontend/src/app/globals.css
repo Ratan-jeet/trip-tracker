@@ -2,27 +2,249 @@
 @tailwind components;
 @tailwind utilities;
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+/*
+ * Design tokens.
+ *
+ * Every colour is defined once here as a semantic role and consumed through Tailwind
+ * (see tailwind.config.js). The previous UI hard-coded gray-50/gray-200/blue-600 at
+ * roughly 200 call sites, which is why the palette drifted and why there was no way to
+ * support a dark theme — a real problem for an app people use in a car at night.
+ */
+@layer base {
+  :root {
+    color-scheme: light;
+
+    --bg: 0 0% 100%;
+    --bg-subtle: 220 20% 97%;
+    --bg-elevated: 0 0% 100%;
+    --bg-inset: 220 22% 94%;
+
+    --border: 220 16% 89%;
+    --border-strong: 220 14% 80%;
+
+    --text: 222 42% 12%;
+    --text-muted: 220 12% 42%;
+    --text-subtle: 220 10% 58%;
+
+    --accent: 224 82% 56%;
+    --accent-hover: 224 76% 48%;
+    --accent-fg: 0 0% 100%;
+    --accent-soft: 224 96% 96%;
+
+    /* Sharing on. Reserved exclusively for "your location is being shared". */
+    --live: 152 62% 38%;
+    --live-soft: 152 62% 95%;
+
+    --warning: 32 92% 46%;
+    --warning-soft: 40 96% 94%;
+
+    --danger: 358 68% 52%;
+    --danger-hover: 358 64% 44%;
+    --danger-soft: 358 92% 96%;
+
+    --vehicle: 14 84% 54%;
+
+    --ring: 224 82% 56%;
+
+    --shadow-sm: 0 1px 2px hsl(222 40% 12% / 0.06), 0 1px 3px hsl(222 40% 12% / 0.08);
+    --shadow-md: 0 2px 4px hsl(222 40% 12% / 0.05), 0 8px 20px hsl(222 40% 12% / 0.1);
+    --shadow-lg: 0 4px 8px hsl(222 40% 12% / 0.06), 0 16px 40px hsl(222 40% 12% / 0.14);
+  }
+
+  :root[data-theme='dark'],
+  :root:not([data-theme='light']) {
+    /* Only applies via the media query below; the selector above handles explicit choice. */
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      color-scheme: dark;
+
+      --bg: 224 30% 9%;
+      --bg-subtle: 224 28% 12%;
+      --bg-elevated: 224 26% 14%;
+      --bg-inset: 224 26% 17%;
+
+      --border: 223 20% 22%;
+      --border-strong: 223 18% 32%;
+
+      --text: 220 26% 96%;
+      --text-muted: 220 14% 70%;
+      --text-subtle: 220 12% 56%;
+
+      --accent: 222 90% 66%;
+      --accent-hover: 222 92% 74%;
+      --accent-fg: 224 40% 10%;
+      --accent-soft: 224 46% 20%;
+
+      --live: 152 58% 48%;
+      --live-soft: 152 40% 18%;
+
+      --warning: 36 92% 60%;
+      --warning-soft: 36 40% 20%;
+
+      --danger: 358 78% 65%;
+      --danger-hover: 358 82% 72%;
+      --danger-soft: 358 40% 22%;
+
+      --vehicle: 16 88% 62%;
+
+      --ring: 222 90% 66%;
+
+      --shadow-sm: 0 1px 2px hsl(0 0% 0% / 0.3), 0 1px 3px hsl(0 0% 0% / 0.4);
+      --shadow-md: 0 2px 4px hsl(0 0% 0% / 0.3), 0 8px 20px hsl(0 0% 0% / 0.45);
+      --shadow-lg: 0 4px 8px hsl(0 0% 0% / 0.35), 0 16px 40px hsl(0 0% 0% / 0.55);
+    }
+  }
+
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+
+    --bg: 224 30% 9%;
+    --bg-subtle: 224 28% 12%;
+    --bg-elevated: 224 26% 14%;
+    --bg-inset: 224 26% 17%;
+
+    --border: 223 20% 22%;
+    --border-strong: 223 18% 32%;
+
+    --text: 220 26% 96%;
+    --text-muted: 220 14% 70%;
+    --text-subtle: 220 12% 56%;
+
+    --accent: 222 90% 66%;
+    --accent-hover: 222 92% 74%;
+    --accent-fg: 224 40% 10%;
+    --accent-soft: 224 46% 20%;
+
+    --live: 152 58% 48%;
+    --live-soft: 152 40% 18%;
+
+    --warning: 36 92% 60%;
+    --warning-soft: 36 40% 20%;
+
+    --danger: 358 78% 65%;
+    --danger-hover: 358 82% 72%;
+    --danger-soft: 358 40% 22%;
+
+    --vehicle: 16 88% 62%;
+
+    --ring: 222 90% 66%;
+
+    --shadow-sm: 0 1px 2px hsl(0 0% 0% / 0.3), 0 1px 3px hsl(0 0% 0% / 0.4);
+    --shadow-md: 0 2px 4px hsl(0 0% 0% / 0.3), 0 8px 20px hsl(0 0% 0% / 0.45);
+    --shadow-lg: 0 4px 8px hsl(0 0% 0% / 0.35), 0 16px 40px hsl(0 0% 0% / 0.55);
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-surface-subtle text-fg antialiased;
+    font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+
+  /* A visible, consistent focus ring. Icon-only controls previously had none at all. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-[hsl(var(--bg))];
+  }
+
+  /* Respect a user's reduced-motion preference; the map does a lot of easing. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+@layer components {
+  .card {
+    @apply rounded-2xl border border-border bg-surface shadow-sm;
+  }
+
+  /* Numbers that update in place (speed, ETA, distance) must not reflow as digits change. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
 }
 
-.leaflet-container {
-  width: 100%;
-  height: 100%;
-}
-
-.leaflet-popup-content-wrapper {
-  border-radius: 10px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-}
-
+/* Map marker pulse. Defined here rather than injected into marker HTML. */
 @keyframes pulse-ring {
-  0% { transform: scale(0.8); opacity: 1; }
-  100% { transform: scale(2); opacity: 0; }
+  0% {
+    transform: scale(0.85);
+    opacity: 0.7;
+  }
+  70% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* MapLibre's own chrome, themed to match. */
+.maplibregl-ctrl-group {
+  background: hsl(var(--bg-elevated)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  box-shadow: var(--shadow-md) !important;
+  border-radius: 0.75rem !important;
+  overflow: hidden;
+}
+.maplibregl-ctrl-group button + button {
+  border-top: 1px solid hsl(var(--border)) !important;
+}
+.maplibregl-ctrl-group button .maplibregl-ctrl-icon {
+  filter: var(--map-ctrl-filter, none);
+}
+:root[data-theme='dark'] .maplibregl-ctrl-group button .maplibregl-ctrl-icon {
+  filter: invert(1);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .maplibregl-ctrl-group button .maplibregl-ctrl-icon {
+    filter: invert(1);
+  }
+}
+.maplibregl-popup-content {
+  background: hsl(var(--bg-elevated)) !important;
+  color: hsl(var(--text)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  border-radius: 0.75rem !important;
+  box-shadow: var(--shadow-lg) !important;
+  padding: 0.625rem 0.75rem !important;
+}
+.maplibregl-popup-tip {
+  border-top-color: hsl(var(--bg-elevated)) !important;
+  border-bottom-color: hsl(var(--bg-elevated)) !important;
+}
+.maplibregl-ctrl-attrib {
+  background: hsl(var(--bg) / 0.8) !important;
+  color: hsl(var(--text-muted)) !important;
+  border-radius: 0.5rem 0 0 0 !important;
+}
+.maplibregl-ctrl-attrib a {
+  color: hsl(var(--text-muted)) !important;
 }

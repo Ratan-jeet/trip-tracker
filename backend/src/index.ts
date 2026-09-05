@@ -1,104 +1,123 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
 import websocket from '@fastify/websocket';
 import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
-import { initDatabase, queryOne, run, closeDatabase } from './db/helpers';
+import { config } from './config';
+import { closeDatabase, initDatabase, queryOne } from './db';
+import { closeCache, initCache } from './db/cache';
+import { registerErrorHandler } from './lib/errors';
+import { unauthorized } from './lib/errors';
+import { startRetentionJob, stopRetentionJob } from './lib/retention';
 import authRoutes from './routes/auth';
 import tripRoutes from './routes/trips';
 import locationRoutes from './routes/locations';
-import { setupWebSocket, broadcastToTrip } from './websocket';
+import routingRoutes from './routes/routing';
+import { setupWebSocket } from './websocket';
 import { initMQTT } from './mqtt/handler';
-import { nanoid } from 'nanoid';
-import bcrypt from 'bcryptjs';
 
-const PORT = parseInt(process.env.PORT || '3001');
-const HOST = process.env.HOST || '0.0.0.0';
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production-' + nanoid(16);
-const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:3000';
+async function buildServer() {
+  const app = Fastify({
+    logger: config.isProduction
+      ? { level: 'info' }
+      : { level: 'info', transport: undefined },
+    trustProxy: config.isProduction,
+    bodyLimit: 256 * 1024,
+  });
 
-async function main() {
-  await initDatabase();
+  registerErrorHandler(app);
 
-  const app = Fastify({ logger: { level: 'info' } });
-
-  await app.register(cors, { origin: CORS_ORIGIN, credentials: true });
+  await app.register(helmet, {
+    // The API serves JSON and never renders HTML, so the strictest defaults apply.
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  });
+  await app.register(cors, { origin: config.corsOrigins, credentials: true });
   await app.register(websocket);
-  await app.register(jwt, { secret: JWT_SECRET, sign: { expiresIn: '7d' } });
-  await app.register(rateLimit, { max: 200, timeWindow: '1 minute' });
+  await app.register(jwt, {
+    secret: config.JWT_SECRET,
+    sign: { expiresIn: config.JWT_EXPIRES_IN },
+  });
+  await app.register(rateLimit, {
+    max: 200,
+    timeWindow: '1 minute',
+    // Credential and ingest routes set their own tighter budgets.
+    keyGenerator: (request) => request.ip,
+  });
 
-  app.decorate('authenticate', async function (request: any, reply: any) {
+  app.decorateRequest('currentUserId', '');
+
+  app.decorate('authenticate', async function authenticate(request: any) {
     try {
       await request.jwtVerify();
-    } catch (err) {
-      reply.status(401).send({ error: 'Unauthorized' });
+    } catch {
+      throw unauthorized('Sign in to continue', 'AUTH_REQUIRED');
     }
+
+    const payload = request.user as { userId: string; tv?: number };
+    const user = await queryOne<{ token_version: number }>('SELECT token_version FROM users WHERE id = $1', [
+      payload.userId,
+    ]);
+    // A bumped token_version (sign out everywhere, 2FA change) invalidates tokens that
+    // have not expired yet.
+    if (!user || (payload.tv ?? 0) !== (user.token_version ?? 0)) {
+      throw unauthorized('Your session has expired, please sign in again', 'SESSION_EXPIRED');
+    }
+    request.currentUserId = payload.userId;
   });
 
   setupWebSocket(app);
+
   await app.register(authRoutes);
   await app.register(tripRoutes);
   await app.register(locationRoutes);
+  await app.register(routingRoutes);
 
-  app.get('/', async () => ({ name: 'Trip Tracker API', status: 'ok', docs: '/api/health' }));
-  app.get('/api/health', async () => ({ status: 'ok', timestamp: new Date().toISOString() }));
+  app.get('/', async () => ({ name: 'Trip Tracker API', status: 'ok', health: '/api/health' }));
+  app.get('/api/health', async () => ({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    database: config.usePostgres ? 'postgres' : 'sqlite',
+    cache: config.REDIS_URL ? 'redis' : 'memory',
+  }));
 
-  await seedDemoData();
+  return app;
+}
 
-  initMQTT((tripId, deviceId, data) => {
-    broadcastToTrip(tripId, { type: 'location_update', deviceId, ...data });
-  });
+async function main() {
+  await initDatabase();
+  await initCache();
 
-  const shutdown = async () => {
-    console.log('\nShutting down...');
-    await app.close();
-    await closeDatabase();
-    process.exit(0);
+  const app = await buildServer();
+  initMQTT();
+  startRetentionJob();
+
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    app.log.info(`${signal} received, shutting down`);
+    stopRetentionJob();
+    try {
+      await app.close();
+      await closeCache();
+      await closeDatabase();
+      process.exit(0);
+    } catch (err) {
+      app.log.error({ err }, 'error during shutdown');
+      process.exit(1);
+    }
   };
 
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
 
-  try {
-    await app.listen({ port: PORT, host: HOST });
-    console.log(`\n  Trip Tracker API running on http://${HOST}:${PORT}\n`);
-  } catch (err) {
-    console.error(err);
-    process.exit(1);
-  }
+  await app.listen({ port: config.PORT, host: config.HOST });
+  app.log.info(`Trip Tracker API listening on http://${config.HOST}:${config.PORT}`);
 }
 
-async function seedDemoData() {
-  const existing = await queryOne('SELECT id FROM users LIMIT 1');
-  if (existing) return;
-
-  const passwordHash = await bcrypt.hash('password123', 12);
-  const aliceId = nanoid();
-  const bobId = nanoid();
-
-  await run('INSERT INTO users (id, email, password_hash, display_name, phone) VALUES ($1, $2, $3, $4, $5)',
-    [aliceId, 'alice@example.com', passwordHash, 'Alice', '+1234567890']);
-  await run('INSERT INTO users (id, email, password_hash, display_name, phone) VALUES ($1, $2, $3, $4, $5)',
-    [bobId, 'bob@example.com', passwordHash, 'Bob', '+0987654321']);
-
-  const tripId = nanoid();
-  const inviteCode = nanoid(8).toUpperCase();
-
-  await run('INSERT INTO trips (id, name, description, invite_code, creator_id) VALUES ($1, $2, $3, $4, $5)',
-    [tripId, 'Goa Trip 2024', 'Annual friends trip to Goa', inviteCode, aliceId]);
-  await run('INSERT INTO trip_members (id, trip_id, user_id, role, is_sharing, consent_given, consent_level) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-    [nanoid(), tripId, aliceId, 'admin', true, true, 'always']);
-  await run('INSERT INTO trip_members (id, trip_id, user_id, role, is_sharing, consent_given, consent_level) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-    [nanoid(), tripId, bobId, 'member', true, true, 'always']);
-  await run('INSERT INTO devices (id, user_id, trip_id, device_type, name) VALUES ($1, $2, $3, $4, $5)',
-    [nanoid(), aliceId, tripId, 'phone', "Alice's Phone"]);
-  await run('INSERT INTO devices (id, user_id, trip_id, device_type, name) VALUES ($1, $2, $3, $4, $5)',
-    [nanoid(), bobId, tripId, 'phone', "Bob's Phone"]);
-
-  console.log(`  Demo accounts:`);
-  console.log(`    alice@example.com / password123`);
-  console.log(`    bob@example.com   / password123`);
-  console.log(`  Demo trip invite code: ${inviteCode}\n`);
-}
-
-main();
+main().catch((err) => {
+  console.error('Failed to start:', err);
+  process.exit(1);
+});

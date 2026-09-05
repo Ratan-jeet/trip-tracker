@@ -1,172 +1,257 @@
 'use client';
 
-import { haversineDistance, formatDistance, formatTime } from './MapView';
+import { useEffect, useState } from 'react';
+import type { Device, LivePosition, TripMember, TripRoute } from '@/lib/api';
+import { formatDistance, formatRelative, formatSpeed, haversineKm, initialsOf, isStale } from '@/lib/format';
+import Badge from './ui/Badge';
+import IconButton from './ui/IconButton';
+import { cn } from './ui/cn';
 
 interface MemberListProps {
-  members: any[];
-  devices: any[];
-  liveLocations: any[];
+  members: TripMember[];
+  devices: Device[];
+  liveLocations: LivePosition[];
+  route: TripRoute | null;
+  currentUserId?: string;
   followDeviceId: string | null;
+  isAdmin: boolean;
+  isCreator: boolean;
+  creatorId: string;
   onFollow: (deviceId: string | null) => void;
   onCenter: (lat: number, lng: number) => void;
-  currentUserId?: string;
-  isPrimaryAdmin: boolean;
-  isAdmin: boolean;
-  onPromote: (userId: string, role: string) => void;
+  onPromote: (userId: string, role: 'admin' | 'member') => void;
   onRemove: (userId: string) => void;
-  route?: {
-    destinationName: string;
-    destinationLat: number;
-    destinationLng: number;
-    waypoints: { lat: number; lng: number }[];
-  } | null;
 }
 
 export default function MemberList({
-  members, devices, liveLocations, followDeviceId, onFollow, onCenter, currentUserId, isPrimaryAdmin, isAdmin, onPromote, onRemove, route
+  members,
+  devices,
+  liveLocations,
+  route,
+  currentUserId,
+  followDeviceId,
+  isAdmin,
+  isCreator,
+  creatorId,
+  onFollow,
+  onCenter,
+  onPromote,
+  onRemove,
 }: MemberListProps) {
-  const getRouteStats = (lat: number, lng: number, speed: number) => {
-    if (!route) return null;
+  // Staleness is time-dependent, so re-render on a timer instead of freezing whatever
+  // the server thought at request time.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
-    const destLat = route.destinationLat;
-    const destLng = route.destinationLng;
+  const [menuFor, setMenuFor] = useState<string | null>(null);
 
-    const distToDest = haversineDistance(lat, lng, destLat, destLng);
-    const speedKmh = (speed || 0) * 3.6;
-    const etaHours = speedKmh > 1 ? distToDest / speedKmh : 0;
+  // Devices are matched to people by owner id. Matching on display name — as this list
+  // and the trip page both used to — mixes up any two members with the same name.
+  const positionFor = (userId: string) =>
+    liveLocations.find((l) => l.ownerId === userId && l.deviceType === 'phone') ??
+    liveLocations.find((l) => l.ownerId === userId);
 
-    return {
-      distToDest,
-      etaHours,
-      speedKmh,
-    };
-  };
+  const vehicles = liveLocations.filter((l) => l.deviceType === 'vehicle');
 
   return (
-    <div className="bg-white border-t border-gray-200 px-4 py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.1)]">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="font-semibold text-gray-900 text-sm">
-          Members ({members.length})
-        </h3>
-        <span className="text-xs text-green-600 font-medium bg-green-50 px-2 py-1 rounded-full flex items-center gap-1">
-          <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
-          Sharing Active
-        </span>
-      </div>
+    <div className="divide-y divide-border">
+      {members.map((member) => {
+        const position = positionFor(member.userId);
+        const stale = position ? isStale(position.timestamp, now) : true;
+        const isSelf = member.userId === currentUserId;
+        const distanceToDestination =
+          position && route
+            ? haversineKm(position.lat, position.lng, route.destinationLat, route.destinationLng) * 1000
+            : null;
 
-      <div className="space-y-1 max-h-[200px] overflow-y-auto">
-        {members.map((member) => {
-          const memberDevices = devices.filter((d: any) => d.ownerName === member.displayName);
-          const memberLocations = liveLocations.filter((l: any) =>
-            memberDevices.some((d: any) => d.id === l.deviceId)
-          );
-          const hasLiveLocation = memberLocations.length > 0;
-          const isCurrentUser = member.userId === currentUserId;
-          const isThisAdmin = member.role === 'admin';
-          const loc = memberLocations[0];
-          const stats = loc ? getRouteStats(loc.lat, loc.lng, loc.speed || 0) : null;
+        return (
+          <div key={member.userId} className="flex items-center gap-3 px-4 py-3">
+            <span
+              className={cn(
+                'grid h-9 w-9 shrink-0 place-items-center rounded-full text-[12px] font-bold',
+                member.isSharing && !stale ? 'bg-accent text-accent-fg' : 'bg-surface-inset text-fg-subtle',
+              )}
+              aria-hidden="true"
+            >
+              {initialsOf(member.displayName)}
+            </span>
 
-          return (
-            <div key={member.userId} className="flex items-center gap-3 py-2 px-2 rounded-lg hover:bg-gray-50">
-              <div className="relative shrink-0">
-                <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold text-white ${
-                  hasLiveLocation ? 'bg-blue-500' : 'bg-gray-400'
-                }`}>
-                  {member.displayName.charAt(0).toUpperCase()}
-                </div>
-                {hasLiveLocation && (
-                  <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-white"></div>
-                )}
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <span className="truncate text-sm font-medium text-fg">
+                  {member.displayName}
+                  {isSelf && <span className="ml-1 text-fg-subtle">(you)</span>}
+                </span>
+                {member.userId === creatorId ? (
+                  <Badge tone="accent">Owner</Badge>
+                ) : member.role === 'admin' ? (
+                  <Badge tone="neutral">Admin</Badge>
+                ) : null}
               </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`text-sm font-semibold truncate ${hasLiveLocation ? 'text-blue-600 hover:text-blue-800 cursor-pointer' : 'text-gray-900'}`}
-                    onClick={() => hasLiveLocation && onCenter(loc.lat, loc.lng)}
-                  >
-                    {member.displayName}
-                  </span>
-                  {isCurrentUser && (
-                    <span className="text-xs text-gray-400 font-normal">(You)</span>
-                  )}
-                  {isThisAdmin && (
-                    <span className="text-[10px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded font-medium">Admin</span>
-                  )}
-                </div>
-                <div className="text-xs text-gray-500">
-                  {hasLiveLocation ? (
-                    <span className="text-green-600 font-medium">Live</span>
-                  ) : (
-                    <span className="text-gray-400">Connected</span>
-                  )}
-                  {loc && loc.speed > 0 && (
-                    <span> &middot; {(loc.speed * 3.6).toFixed(0)} km/h</span>
-                  )}
-                  {loc && loc.batteryLevel !== undefined && (
-                    <span> &middot; {loc.batteryLevel}%</span>
-                  )}
-                </div>
-                {stats && (
-                  <div className="text-[11px] text-blue-600 mt-0.5 space-x-2">
-                    <span>{formatDistance(stats.distToDest)} left</span>
-                    {stats.speedKmh > 1 && (
-                      <span>&middot; {formatTime(stats.etaHours)}</span>
-                    )}
-                  </div>
-                )}
-              </div>
-              <div className="flex items-center gap-1 shrink-0">
-                {hasLiveLocation && (
-                  <button
-                    onClick={() => onFollow(followDeviceId === loc.deviceId ? null : loc.deviceId)}
-                    className={`p-2 rounded-lg transition-colors ${
-                      followDeviceId === loc.deviceId
-                        ? 'bg-blue-100 text-blue-600'
-                        : 'text-gray-400 hover:bg-gray-100'
-                    }`}
-                    title={followDeviceId === loc.deviceId ? 'Unfollow' : 'Follow'}
-                  >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                    </svg>
-                  </button>
-                )}
-                {!hasLiveLocation && (
-                  <span className="p-2 text-gray-300" title="No live location">
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                    </svg>
-                  </span>
-                )}
-                {isPrimaryAdmin && !isCurrentUser && (
+
+              <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-fg-muted">
+                {!member.isSharing ? (
+                  <span className="text-fg-subtle">Not sharing</span>
+                ) : !position ? (
+                  <span className="text-fg-subtle">Waiting for a fix…</span>
+                ) : (
                   <>
-                    <button
-                      onClick={() => onPromote(member.userId, isThisAdmin ? 'member' : 'admin')}
-                      className={`px-2 py-1 text-[11px] font-medium rounded transition-colors ${
-                        isThisAdmin
-                          ? 'bg-purple-50 text-purple-600 hover:bg-purple-100'
-                          : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                      }`}
-                      title={isThisAdmin ? 'Remove admin' : 'Make admin'}
-                    >
-                      {isThisAdmin ? 'Demote' : 'Make Admin'}
-                    </button>
-                    <button
-                      onClick={() => onRemove(member.userId)}
-                      className="px-2 py-1 text-[11px] font-medium rounded bg-red-50 text-red-600 hover:bg-red-100"
-                      title="Remove from trip"
-                    >
-                      Remove
-                    </button>
+                    <span className={cn('flex items-center gap-1', !stale && 'text-live')}>
+                      <span
+                        className={cn('h-1.5 w-1.5 rounded-full', stale ? 'bg-fg-subtle' : 'bg-live')}
+                        aria-hidden="true"
+                      />
+                      {stale ? formatRelative(position.timestamp, now) : 'Live'}
+                    </span>
+                    {formatSpeed(position.speed) && <span className="tabular">{formatSpeed(position.speed)}</span>}
+                    {distanceToDestination != null && (
+                      <span className="tabular">{formatDistance(distanceToDestination)} to go</span>
+                    )}
+                    {position.batteryLevel != null && (
+                      <span className={cn('tabular', position.batteryLevel <= 15 && 'text-warning')}>
+                        {position.batteryLevel}%
+                      </span>
+                    )}
                   </>
                 )}
               </div>
             </div>
-          );
-        })}
-      </div>
+
+            <div className="flex shrink-0 items-center gap-1">
+              {position && (
+                <>
+                  <IconButton
+                    label={`Centre the map on ${member.displayName}`}
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onCenter(position.lat, position.lng)}
+                    icon={
+                      <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4">
+                        <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2" />
+                        <path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                      </svg>
+                    }
+                  />
+                  <IconButton
+                    label={
+                      followDeviceId === position.deviceId
+                        ? `Stop following ${member.displayName}`
+                        : `Follow ${member.displayName}`
+                    }
+                    variant={followDeviceId === position.deviceId ? 'accent' : 'ghost'}
+                    size="sm"
+                    onClick={() => onFollow(followDeviceId === position.deviceId ? null : position.deviceId)}
+                    icon={
+                      <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4">
+                        <path
+                          d="M3 11l18-8-8 18-2-8-8-2z"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinejoin="round"
+                          fill={followDeviceId === position.deviceId ? 'currentColor' : 'none'}
+                        />
+                      </svg>
+                    }
+                  />
+                </>
+              )}
+
+              {isAdmin && !isSelf && member.userId !== creatorId && (
+                <div className="relative">
+                  <IconButton
+                    label={`Manage ${member.displayName}`}
+                    variant="ghost"
+                    size="sm"
+                    aria-expanded={menuFor === member.userId}
+                    onClick={() => setMenuFor(menuFor === member.userId ? null : member.userId)}
+                    icon={
+                      <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+                        <circle cx="12" cy="5" r="1.6" />
+                        <circle cx="12" cy="12" r="1.6" />
+                        <circle cx="12" cy="19" r="1.6" />
+                      </svg>
+                    }
+                  />
+                  {menuFor === member.userId && (
+                    <>
+                      <div className="fixed inset-0 z-10" onClick={() => setMenuFor(null)} aria-hidden="true" />
+                      <div className="absolute right-0 z-20 mt-1 w-52 overflow-hidden rounded-xl border border-border bg-surface shadow-lg">
+                        <button
+                          type="button"
+                          className="block w-full px-3.5 py-2.5 text-left text-[13px] text-fg hover:bg-surface-inset"
+                          onClick={() => {
+                            onPromote(member.userId, member.role === 'admin' ? 'member' : 'admin');
+                            setMenuFor(null);
+                          }}
+                        >
+                          {member.role === 'admin' ? 'Remove admin' : 'Make admin'}
+                        </button>
+                        {isCreator && (
+                          <button
+                            type="button"
+                            className="block w-full border-t border-border px-3.5 py-2.5 text-left text-[13px] text-danger hover:bg-danger-soft"
+                            onClick={() => {
+                              onRemove(member.userId);
+                              setMenuFor(null);
+                            }}
+                          >
+                            Remove from trip
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+
+      {vehicles.map((vehicle) => {
+        const stale = isStale(vehicle.timestamp, now);
+        return (
+          <div key={vehicle.deviceId} className="flex items-center gap-3 px-4 py-3">
+            <span
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-white"
+              style={{ background: 'hsl(var(--vehicle))' }}
+              aria-hidden="true"
+            >
+              <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4">
+                <path d="M5 17h14M6 17v2M18 17v2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                <path d="M4 17l1.4-5.2A2 2 0 0 1 7.3 10h9.4a2 2 0 0 1 1.9 1.8L20 17" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+              </svg>
+            </span>
+            <div className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium text-fg">{vehicle.deviceName}</span>
+              <span className="mt-0.5 flex items-center gap-2 text-xs text-fg-muted">
+                <span className={cn(!stale && 'text-live')}>{stale ? formatRelative(vehicle.timestamp, now) : 'Live'}</span>
+                {formatSpeed(vehicle.speed) && <span className="tabular">{formatSpeed(vehicle.speed)}</span>}
+                {vehicle.ignitionStatus != null && <span>{vehicle.ignitionStatus ? 'Ignition on' : 'Ignition off'}</span>}
+              </span>
+            </div>
+            <IconButton
+              label={`Centre the map on ${vehicle.deviceName}`}
+              variant="ghost"
+              size="sm"
+              onClick={() => onCenter(vehicle.lat, vehicle.lng)}
+              icon={
+                <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4">
+                  <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2" />
+                  <path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              }
+            />
+          </div>
+        );
+      })}
+
+      {devices.length === 0 && members.length === 0 && (
+        <p className="px-4 py-8 text-center text-sm text-fg-subtle">No members yet.</p>
+      )}
     </div>
   );
 }
